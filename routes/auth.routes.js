@@ -8,7 +8,7 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 
 // ℹ️ Handles files upload
-const fileUploader = require("../config/cloudinary.config");
+const fileUploader = require("../config/cloudinary.config.js");
 
 // Require the User model in order to interact with the database
 const User = require("../models/User.model");
@@ -21,7 +21,7 @@ const saltRounds = 10;
 
 // POST /auth/signup  - Creates a new user in the database
 router.post("/signup", fileUploader.single("profilePic"), async (req, res, next) => {
-  const { email, password, name } = req.body;
+  const { email, password, name, gender, birthdate, country } = req.body;
   const profilePic = req.file ? req.file.path : null
 
   // Check if email or password or name are provided as empty strings
