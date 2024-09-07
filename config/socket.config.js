@@ -20,6 +20,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('joinRoom', (roomId) => {
+        if (!socket.user) return
         socket.roomId = roomId
         socket.join(roomId);
         io.to(roomId).emit('userJoined', socket.user);
@@ -41,6 +42,11 @@ io.on('connection', (socket) => {
     socket.on('kickPlayer', (roomId, playerId) => {
         io.to(roomId).emit('playerKicked', playerId);
         console.log(`Player with ID ${playerId} was kicked from room ${roomId}`);
+    });
+
+    socket.on('updateRoom', (roomId, updatedRoom) => {
+        io.to(roomId).emit('roomUpdated', updatedRoom);
+        console.log(updatedRoom.isActive ? `a game started in room ${roomId}` : `a game ended in room ${roomId}`);
     });
 
     /*

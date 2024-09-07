@@ -4,7 +4,9 @@ const roomSchema = new Schema(
   {
     creator: { type: Schema.Types.ObjectId, ref: 'User'},
     name: { type: String, required: true },
-    isActive: { type: Boolean, default: false },
+    gameSession: { 
+      players: [{ type: Schema.Types.ObjectId, ref: 'User' }],
+    },
     kickedUsers: [{ type: Schema.Types.ObjectId, ref: 'User' }],
   },
   {

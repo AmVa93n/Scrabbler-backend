@@ -91,7 +91,7 @@ router.post("/room", isAuthenticated, async (req, res, next) => {
 router.get("/room/:roomId", isAuthenticated, async (req, res, next) => {
   try {
     const roomId = req.params.roomId;
-    const roomData = await Room.findById(roomId);
+    const roomData = await Room.findById(roomId).populate('gameSession.players');
     
     if (!roomData) {
       return res.status(404).json({ message: "Room not found" });
@@ -106,9 +106,9 @@ router.get("/room/:roomId", isAuthenticated, async (req, res, next) => {
 router.put("/room/:roomId", isAuthenticated, async (req, res, next) => {
   try {
     const roomId = req.params.roomId;
-    const { name, isActive, kickedUsers } = req.body;
+    const { name, gameSession, kickedUsers } = req.body;
 
-    const updatedRoom = await Room.findByIdAndUpdate(roomId, { name, isActive, kickedUsers }, { new: true });
+    const updatedRoom = await Room.findByIdAndUpdate(roomId, { name, gameSession, kickedUsers }, { new: true }).populate('gameSession.players');
 
     if (!updatedRoom) {
       return res.status(404).json({ message: "Room not found" });
