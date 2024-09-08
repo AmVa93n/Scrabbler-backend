@@ -16,7 +16,7 @@ io.on('connection', (socket) => {
     socket.on('online', async (user) => {
         socket.user = user
         socket.join(user._id);
-        console.log(`${user.name} is online in roomId ${user._id}`)
+        console.log(`${user.name} is online`)
     });
 
     socket.on('joinRoom', (roomId) => {
@@ -25,11 +25,22 @@ io.on('connection', (socket) => {
         socket.join(roomId);
         io.to(roomId).emit('userJoined', socket.user);
         console.log(`${socket.user.name} joined room ${roomId}`);
-        // Emit the current users in the room
+        
         const roomSocketIds = io.sockets.adapter.rooms.get(roomId);
         const allSockets = io.sockets.sockets
-        const currentUsers = Array.from(roomSocketIds).map(id => allSockets.get(id).user)
-        io.to(roomId).emit('currentUsers', currentUsers);
+        const waitingUsers = Array.from(roomSocketIds).map(id => allSockets.get(id).user)
+        const session = activeGames.find(game => game.roomId === roomId)
+        if (session) {
+          const sessionData = {
+            turnPlayer: session.players[session.turnPlayerIndex],
+            turnEndTime: session.turnEndTime.toISOString(),
+            turnNumber: session.turnNumber,
+          }
+          io.to(roomId).emit('initRoomState', waitingUsers, sessionData);
+        } else {
+          io.to(roomId).emit('initRoomState', waitingUsers);
+        }
+        
     });
 
     socket.on('leaveRoom', (roomId) => {
@@ -46,7 +57,25 @@ io.on('connection', (socket) => {
 
     socket.on('updateRoom', (roomId, updatedRoom) => {
         io.to(roomId).emit('roomUpdated', updatedRoom);
-        console.log(updatedRoom.isActive ? `a game started in room ${roomId}` : `a game ended in room ${roomId}`);
+        console.log(updatedRoom.gameSession ? `a game started in room ${roomId}` : `a game ended in room ${roomId}`);
+        const game = activeGames.find(game => game.roomId === roomId)
+        if (updatedRoom.gameSession) {
+            if (!game) activeGames.push(new GameSession(updatedRoom))
+        } else {
+            if (game) {
+              game.endGame()
+              activeGames.splice(activeGames.indexOf(game), 1)
+            }
+            const roomSocketIds = io.sockets.adapter.rooms.get(roomId);
+            const allSockets = io.sockets.sockets
+            const waitingUsers = Array.from(roomSocketIds).map(id => allSockets.get(id).user)
+            io.to(roomId).emit('initRoomState', waitingUsers);
+        }
+    });
+
+    socket.on('makeMove', (roomId, moveData) => {
+        const game = activeGames.find(game => game.roomId === roomId)
+        if (game) game.handleMove(moveData);
     });
 
     /*
@@ -112,5 +141,93 @@ io.on('connection', (socket) => {
     });
 
 });
+
+const activeGames = []
+const turnDuration = 30 // for testing
+
+class GameSession {
+    constructor(room) {
+        this.roomId = room._id
+        this.players = [...room.gameSession.players]
+        this.turnPlayerIndex = 0;
+        this.turnNumber = 1
+        this.turnDuration = (turnDuration || 60) * 1000 // 60s by default
+        this.inactivityCounter = 0
+        this.inactivePlayerIds = []
+        this.isActive = true;
+        this.startTurn()
+    }
+
+    startTurn() {
+        if (!this.isActive) return;  // Prevent turn logic if game is inactive
+        const turnPlayer = this.players[this.turnPlayerIndex];
+        if (turnPlayer.skipped) { // skip the turn if host marked player as inactive
+          console.log(`${turnPlayer.name}'s turn was skipped due to inactivity`)
+          this.nextTurn()
+          return
+        }
+        this.turnEndTime = new Date(Date.now() + this.turnDuration); // 1 minute from now
+        // Clear the previous timeout (if any)
+        if (this.turnTimeout) {
+            clearTimeout(this.turnTimeout);
+        }
+        // Notify all players that it's the current player's turn
+        io.to(this.roomId).emit('turnStart', turnPlayer, this.turnEndTime.toISOString(), this.turnNumber);
+        console.log(`${turnPlayer.name}'s turn has started (turn #${this.turnNumber})`)
+        // Set a 1-minute timer
+        this.turnTimeout = setTimeout(() => {
+            this.handleTurnTimeout();
+        }, this.turnDuration);
+    }
+
+    handleMove(moveData) {
+        // Clear the timeout
+        clearTimeout(this.turnTimeout);
+        // ...
+        const turnPlayer = this.players[this.turnPlayerIndex]
+        console.log(`${turnPlayer.name} has made their move`)
+        // reset inactivity counters
+        this.inactivityCounter = 0
+        turnPlayer.inactiveTurns = 0
+        // Advance to the next player's turn
+        this.nextTurn();
+    }
+
+    handleTurnTimeout() {
+        if (!this.isActive) return;  // Skip if game is inactive
+        const turnPlayer = this.players[this.turnPlayerIndex]
+        io.to(this.roomId).emit('turnTimeout', turnPlayer);
+        // increase inactivity counters
+        if (typeof turnPlayer.inactiveTurns !== 'number') turnPlayer.inactiveTurns = 0;
+        turnPlayer.inactiveTurns += 1
+        console.log(`${turnPlayer.name}'s turn has timed out (${turnPlayer.inactiveTurns})`)
+        // end the game if 3 rounds passed with no moves made
+        this.inactivityCounter += 1
+        if (this.inactivityCounter > this.players.length * 3) {
+          this.endGame()
+          console.log(`Game ended due to inactivity of all players`)
+          return
+        }
+        if (turnPlayer.inactiveTurns === 3) {
+          this.inactivePlayerIds.push(turnPlayer._id)
+          console.log(`${turnPlayer.name} missed 3 turns in a row and is eligible to be skipped`)
+        }
+        // Advance to the next player's turn
+        this.nextTurn();
+    }
+    
+    nextTurn() {
+        // Increment turn player index and turn number
+        this.turnPlayerIndex = (this.turnPlayerIndex + 1) % this.players.length;
+        this.turnNumber += 1
+        // Start the next player's turn
+        this.startTurn();
+    }
+
+    endGame() {
+      this.isActive = false;
+      clearTimeout(this.turnTimeout); // Stop the current turn timer
+  }
+}
 
 module.exports = { server };

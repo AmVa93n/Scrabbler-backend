@@ -81,7 +81,7 @@ router.post("/room", isAuthenticated, async (req, res, next) => {
     const creator = req.payload._id;
     const { name } = req.body;
     
-    await Room.create({ creator, name, isActive: false, kickedUsers: []})
+    await Room.create({ creator, name, gameSession: null, kickedUsers: []})
     res.status(200).send()
   } catch (err) {
     next(err);  // Pass the error to the error-handling middleware
