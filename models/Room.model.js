@@ -7,6 +7,7 @@ const roomSchema = new Schema(
     gameSession: { 
       players: [{ type: Schema.Types.ObjectId, ref: 'User' }],
     },
+    messages: [{ type: Schema.Types.ObjectId, ref: 'Message' }],
     kickedUsers: [{ type: Schema.Types.ObjectId, ref: 'User' }],
   },
   {

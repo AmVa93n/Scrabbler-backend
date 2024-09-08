@@ -5,10 +5,11 @@ const app = require('../app');
 const server = http.createServer(app);
 const io = socketIo(server);
 
-const Message = null //require('../models/Message.model'); 
-const Chat = null //require('../models/Chat.model');
+const Message = require('../models/Message.model'); 
+const Room = require('../models/Room.model'); 
+//const Chat = require('../models/Chat.model');
 const User = require('../models/User.model');
-const Notification = null //require("../models/Notification.model");
+//const Notification = require("../models/Notification.model");
 //const { formatDistanceToNow } = require('date-fns');
 
 io.on('connection', (socket) => {
@@ -35,6 +36,7 @@ io.on('connection', (socket) => {
             turnPlayer: session.players[session.turnPlayerIndex],
             turnEndTime: session.turnEndTime.toISOString(),
             turnNumber: session.turnNumber,
+            inactivePlayerIds: [...session.inactivePlayerIds],
           }
           io.to(roomId).emit('initRoomState', waitingUsers, sessionData);
         } else {
@@ -76,6 +78,29 @@ io.on('connection', (socket) => {
     socket.on('makeMove', (roomId, moveData) => {
         const game = activeGames.find(game => game.roomId === roomId)
         if (game) game.handleMove(moveData);
+    });
+
+    socket.on('message', async (roomId, messageData) => {
+      const room = await Room.findById(roomId)
+      const { sender, text } = messageData
+
+      try {
+        const message = await Message.create({ sender, text });
+        room.messages.push(message._id);
+        await room.save();
+        await room.populate('gameSession.players')
+        await room.populate({
+          path: 'messages',
+          populate: {
+            path: 'sender',
+            select: 'name profilePic',
+          }
+        });
+        io.to(roomId).emit('roomUpdated', room);
+      } catch (err) {
+        console.error(err);
+      }
+
     });
 
     /*
@@ -143,7 +168,7 @@ io.on('connection', (socket) => {
 });
 
 const activeGames = []
-const turnDuration = 30 // for testing
+const turnDuration = 60 // for testing
 
 class GameSession {
     constructor(room) {
@@ -172,7 +197,13 @@ class GameSession {
             clearTimeout(this.turnTimeout);
         }
         // Notify all players that it's the current player's turn
-        io.to(this.roomId).emit('turnStart', turnPlayer, this.turnEndTime.toISOString(), this.turnNumber);
+        const sessionData = {
+          turnPlayer: turnPlayer,
+          turnEndTime: this.turnEndTime.toISOString(),
+          turnNumber: this.turnNumber,
+          inactivePlayerIds: [...this.inactivePlayerIds],
+        }
+        io.to(this.roomId).emit('turnStart', sessionData);
         console.log(`${turnPlayer.name}'s turn has started (turn #${this.turnNumber})`)
         // Set a 1-minute timer
         this.turnTimeout = setTimeout(() => {
