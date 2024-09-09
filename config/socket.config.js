@@ -25,7 +25,7 @@ io.on('connection', (socket) => {
         socket.roomId = roomId
         socket.join(roomId);
         io.to(roomId).emit('userJoined', socket.user);
-        console.log(`${socket.user.name} joined room ${roomId}`);
+        RoomManager.sendMessage(roomId, `${socket.user.name} joined the room`);
         
         const roomSocketIds = io.sockets.adapter.rooms.get(roomId);
         const allSockets = io.sockets.sockets
@@ -38,44 +38,61 @@ io.on('connection', (socket) => {
             turnNumber: session.turnNumber,
             inactivePlayerIds: [...session.inactivePlayerIds],
           }
-          io.to(roomId).emit('initRoomState', waitingUsers, sessionData);
+          io.to(roomId).emit('refreshRoom', waitingUsers, sessionData);
         } else {
-          io.to(roomId).emit('initRoomState', waitingUsers);
+          io.to(roomId).emit('refreshRoom', waitingUsers);
         }
         
     });
 
-    socket.on('leaveRoom', (roomId) => {
+    socket.on('leaveRoom', (message) => {
+        if (!socket.roomId) return
+        socket.leave(socket.roomId);
+        io.to(socket.roomId).emit('userLeft', socket.user);
+        RoomManager.sendMessage(socket.roomId, message); // left or kicked
         socket.roomId = null
-        socket.leave(roomId);
-        io.to(roomId).emit('userLeft', playerId);
-        console.log(`${socket.user.name} left room ${roomId}`);
     });
 
-    socket.on('kickPlayer', (roomId, playerId) => {
-        io.to(roomId).emit('playerKicked', playerId);
-        console.log(`Player with ID ${playerId} was kicked from room ${roomId}`);
+    socket.on('kickUser', async (roomId, user) => {
+      const room = await Room.findById(roomId)
+      room.kickedUsers.push(user._id);
+      await room.save();
+      io.to(roomId).emit('roomUpdated', room);
     });
 
-    socket.on('updateRoom', (roomId, updatedRoom) => {
-        io.to(roomId).emit('roomUpdated', updatedRoom);
-        console.log(updatedRoom.gameSession ? `a game started in room ${roomId}` : `a game ended in room ${roomId}`);
-        const game = activeGames.find(game => game.roomId === roomId)
-        if (updatedRoom.gameSession) {
-            if (!game) activeGames.push(new GameSession(updatedRoom))
-        } else {
-            if (game) {
-              game.endGame()
-              activeGames.splice(activeGames.indexOf(game), 1)
-            }
-            const roomSocketIds = io.sockets.adapter.rooms.get(roomId);
-            const allSockets = io.sockets.sockets
-            const waitingUsers = Array.from(roomSocketIds).map(id => allSockets.get(id).user)
-            io.to(roomId).emit('initRoomState', waitingUsers);
-        }
+    socket.on('startGame', async (roomId, gameSession) => {
+      const room = await Room.findByIdAndUpdate(roomId, { gameSession: gameSession }, { new: true })
+      await room.populate('gameSession.players')
+      let game = activeGames.find(game => game.roomId === roomId)
+      if (!game) {
+        game = new GameSession(room)
+        activeGames.push(game)
+        game.sendMessage(`a new game started`)
+        game.startTurn()
+      }
+      io.to(roomId).emit('roomUpdated', room);
     });
 
-    socket.on('makeMove', (roomId, moveData) => {
+    socket.on('endGame', async (roomId) => {
+      const room = await Room.findByIdAndUpdate(roomId, { gameSession: null }, { new: true })
+      await room.populate('gameSession.players')
+      const game = activeGames.find(game => game.roomId === roomId)
+      if (game) {
+        game.endGame()
+        game.sendMessage(`The host has ended the game`)
+      }
+      io.to(roomId).emit('roomUpdated', room);
+    });
+
+    socket.on('skipPlayer', (roomId, userId) => {
+      const game = activeGames.find(game => game.roomId === roomId)
+      if (game) {
+        const player = game.players.find(player => player._id.toString() === userId)
+        if (player) player.skipped = true
+      }
+  });
+
+    socket.on('makeMove', async (roomId, moveData) => {
         const game = activeGames.find(game => game.roomId === roomId)
         if (game) game.handleMove(moveData);
     });
@@ -88,76 +105,13 @@ io.on('connection', (socket) => {
         const message = await Message.create({ sender, text });
         room.messages.push(message._id);
         await room.save();
-        await room.populate('gameSession.players')
-        await room.populate({
-          path: 'messages',
-          populate: {
-            path: 'sender',
-            select: 'name profilePic',
-          }
-        });
-        io.to(roomId).emit('roomUpdated', room);
+        await message.populate('sender', 'name profilePic');
+        io.to(roomId).emit('chatUpdated', message);
       } catch (err) {
         console.error(err);
       }
 
     });
-
-    /*
-    socket.on('getChats', async (userId) => {
-      try {
-        const Chats = await Chat.find({ participants: { $in: [userId] } })
-        .populate({path: 'messages', options: { sort: { timestamp: 1 } }})
-        .populate({path: 'participants', select: 'username profilePic'})
-        .sort({ lastMessageTimestamp: -1 }).lean().exec();
-        socket.emit('initChats', Chats);
-      } catch (err) {
-        console.error(err);
-      }
-    });
-
-    socket.on('join chat', async (chatId) => {
-      socket.join(chatId);
-      console.log(`${socket.userId} joined chat ${chatId}`);
-    });
-
-    socket.on('private message', async (msg) => {
-      const chat = await Chat.findById(msg.chatId)
-      const newMessage = new Message({
-        sender: msg.sender,
-        recipient: msg.recipient,
-        message: msg.message,
-      });
-
-      try {
-        await newMessage.save();
-        chat.messages.push(newMessage._id);
-        chat.lastMessageTimestamp = newMessage.timestamp;
-        await chat.save();
-        io.to(msg.chatId).emit('private message', newMessage); // Emit to chat's room
-        
-        try {
-          const rooms = io.sockets.adapter.rooms
-          const room = rooms.get(msg.chatId)
-          if (room.size === 1) {
-            const existingNotif = await Notification.findOne({ source: msg.sender, target: msg.recipient, type: 'message', read: false }) // anti spam
-            if (!existingNotif) {
-              const notif = await Notification.create({ source: msg.sender, target: msg.recipient, type: 'message' })
-              await notif.populate('source')
-              const notifObject = notif.toObject();
-              notifObject.timeDiff = formatDistanceToNow(new Date(notif.createdAt), { addSuffix: true })
-              io.to(msg.recipient).emit('notification', notifObject)
-            }
-          }
-        } catch (error) {
-          console.error('Error accessing rooms:', error);
-        }
-
-      } catch (err) {
-        console.error(err);
-      }
-    });
-    */
 
     socket.on('disconnect', () => {
         if (!socket.user) return
@@ -167,12 +121,28 @@ io.on('connection', (socket) => {
 
 });
 
+class RoomManager {
+  static async sendMessage(roomId, text) {
+    const room = await Room.findById(roomId)
+
+      try {
+        const message = await Message.create({ text });
+        room.messages.push(message._id);
+        await room.save();
+        await message.populate('sender', 'name profilePic');
+        io.to(roomId).emit('chatUpdated', message);
+      } catch (err) {
+        console.error(err);
+      }
+  }
+}
+
 const activeGames = []
-const turnDuration = 60 // for testing
+const turnDuration = 10 // for testing
 
 class GameSession {
     constructor(room) {
-        this.roomId = room._id
+        this.roomId = room._id.toString()
         this.players = [...room.gameSession.players]
         this.turnPlayerIndex = 0;
         this.turnNumber = 1
@@ -180,14 +150,27 @@ class GameSession {
         this.inactivityCounter = 0
         this.inactivePlayerIds = []
         this.isActive = true;
-        this.startTurn()
+    }
+
+    async sendMessage(text) {
+      const room = await Room.findById(this.roomId)
+
+      try {
+        const message = await Message.create({ text });
+        room.messages.push(message._id);
+        await room.save();
+        await message.populate('sender', 'name profilePic');
+        io.to(this.roomId).emit('chatUpdated', message);
+      } catch (err) {
+        console.error(err);
+      }
     }
 
     startTurn() {
         if (!this.isActive) return;  // Prevent turn logic if game is inactive
         const turnPlayer = this.players[this.turnPlayerIndex];
         if (turnPlayer.skipped) { // skip the turn if host marked player as inactive
-          console.log(`${turnPlayer.name}'s turn was skipped due to inactivity`)
+          this.sendMessage(`Turn ${this.turnNumber}: ${turnPlayer.name} was skipped due to inactivity`)
           this.nextTurn()
           return
         }
@@ -204,7 +187,7 @@ class GameSession {
           inactivePlayerIds: [...this.inactivePlayerIds],
         }
         io.to(this.roomId).emit('turnStart', sessionData);
-        console.log(`${turnPlayer.name}'s turn has started (turn #${this.turnNumber})`)
+        this.sendMessage(`Turn ${this.turnNumber}: ${turnPlayer.name}'s turn has started`)
         // Set a 1-minute timer
         this.turnTimeout = setTimeout(() => {
             this.handleTurnTimeout();
@@ -216,7 +199,7 @@ class GameSession {
         clearTimeout(this.turnTimeout);
         // ...
         const turnPlayer = this.players[this.turnPlayerIndex]
-        console.log(`${turnPlayer.name} has made their move`)
+        this.sendMessage(`${turnPlayer.name} has made their move`)
         // reset inactivity counters
         this.inactivityCounter = 0
         turnPlayer.inactiveTurns = 0
@@ -231,17 +214,17 @@ class GameSession {
         // increase inactivity counters
         if (typeof turnPlayer.inactiveTurns !== 'number') turnPlayer.inactiveTurns = 0;
         turnPlayer.inactiveTurns += 1
-        console.log(`${turnPlayer.name}'s turn has timed out (${turnPlayer.inactiveTurns})`)
+        this.sendMessage(`${turnPlayer.name}'s turn has timed out (${turnPlayer.inactiveTurns})`)
         // end the game if 3 rounds passed with no moves made
         this.inactivityCounter += 1
         if (this.inactivityCounter > this.players.length * 3) {
           this.endGame()
-          console.log(`Game ended due to inactivity of all players`)
+          this.sendMessage(`Game ended due to inactivity of all players`)
           return
         }
-        if (turnPlayer.inactiveTurns === 3) {
+        if (turnPlayer.inactiveTurns === 1) {
           this.inactivePlayerIds.push(turnPlayer._id)
-          console.log(`${turnPlayer.name} missed 3 turns in a row and is eligible to be skipped`)
+          this.sendMessage(`${turnPlayer.name} missed 3 turns in a row and may be skipped`)
         }
         // Advance to the next player's turn
         this.nextTurn();
@@ -258,6 +241,7 @@ class GameSession {
     endGame() {
       this.isActive = false;
       clearTimeout(this.turnTimeout); // Stop the current turn timer
+      activeGames.splice(activeGames.indexOf(this), 1)
   }
 }
 
