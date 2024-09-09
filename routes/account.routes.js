@@ -28,23 +28,32 @@ router.get("/profile", isAuthenticated, async (req, res, next) => {
 router.put("/profile", isAuthenticated, fileUploader.single("profilePic"), async (req, res, next) => {
     const { email, name, gender, birthdate, country } = req.body;
     const profilePic = req.file ? req.file.path : null
-  
-    // Check if email or password or name are provided as empty strings
-    if (email === "" || name === "") {
-      res.status(400).json({ message: "Provide email and name" });
-      return;
-    }
-  
-    // This regular expression check that the email is of a valid format
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
-    if (!emailRegex.test(email)) {
-      res.status(400).json({ message: "Provide a valid email address." });
-      return;
-    }
+
+    // Create an object with only the fields that are present in the request
+    const updateFields = {};
+    if (email !== undefined) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+      if (!emailRegex.test(email)) {
+        res.status(400).json({ message: "Provide a valid email address." });
+        return;
+      }
+      updateFields.email = email
+    };
+    if (name !== undefined) {
+      if (name === "") {
+        res.status(400).json({ message: "Provide a valid name." });
+        return;
+      }
+      updateFields.name = name
+    };
+    if (gender) updateFields.gender = gender;
+    if (birthdate) updateFields.birthdate = birthdate;
+    if (country) updateFields.country = country;
+    if (profilePic) updateFields.profilePic = profilePic;
   
     try {
-      await User.findByIdAndUpdate(req.payload._id, { email, name, gender, birthdate, country, profilePic });
-      const updatedUser = { email, name, profilePic, _id: createdUser._id };
+    // Update the user with only the provided fields
+      const updatedUser = await User.findByIdAndUpdate(req.payload._id, updateFields, { new: true });
       res.status(201).json({ user: updatedUser });
     } catch (err) {
       next(err); // In this case, we send error handling to the error handling middleware.
