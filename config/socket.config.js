@@ -24,33 +24,25 @@ io.on('connection', (socket) => {
         io.to(roomId).emit('userJoined', socket.user);
         RoomManager.sendMessage(roomId, `${socket.user.name} joined the room`);
         
-        const session = activeGames.find(game => game.roomId === roomId)
-        if (session) {
-          const sessionData = {
-            turnPlayer: session.players[session.turnPlayerIndex],
-            turnEndTime: session.turnEndTime.toISOString(),
-            turnNumber: session.turnNumber,
-            inactivePlayerIds: [...session.inactivePlayerIds],
-            board: JSON.parse(JSON.stringify(session.board)),
-            leftInBag: session.letterBag.length,
-            letterBank: session.players.find(player => player._id.toString() === socket.user._id).letterBank
-          }
+        const game = activeGames.find(game => game.roomId === roomId)
+        if (game) {
+          const sessionData = game.getRefreshData(socket.user._id)
           io.to(socket.user._id).emit('refreshGame', sessionData);
 
         } else {
           const roomSocketIds = io.sockets.adapter.rooms.get(roomId);
           const allSockets = io.sockets.sockets
-          const waitingUsers = Array.from(roomSocketIds).map(id => allSockets.get(id).user)
-          io.to(socket.user._id).emit('refreshRoom', waitingUsers);
+          const usersInRoom = Array.from(roomSocketIds).map(id => allSockets.get(id).user)
+          io.to(socket.user._id).emit('refreshRoom', usersInRoom);
         }
-        
     });
 
-    socket.on('leaveRoom', (message) => {
+    socket.on('leaveRoom', (leftOrKicked) => {
         if (!socket.roomId) return
         socket.leave(socket.roomId);
         io.to(socket.roomId).emit('userLeft', socket.user);
-        RoomManager.sendMessage(socket.roomId, message); // left or kicked
+        const message = leftOrKicked === 'left' ? `${socket.user.name} left the room` : `The host kicked ${socket.user.name} from the room`
+        RoomManager.sendMessage(socket.roomId, message);
         socket.roomId = null
     });
 
@@ -58,41 +50,38 @@ io.on('connection', (socket) => {
       const room = await Room.findById(roomId)
       room.kickedUsers.push(user._id);
       await room.save();
-      io.to(roomId).emit('roomUpdated', room);
+      io.to(user._id).emit('userKicked');
     });
 
-    socket.on('startGame', async (roomId, gameSession) => {
-      const room = await Room.findByIdAndUpdate(roomId, { gameSession: gameSession }, { new: true })
-      await room.populate('gameSession.players')
-      io.to(roomId).emit('roomUpdated', room);
+    socket.on('startGame', async (roomId, hostId, gameSession) => {
+      await Room.findByIdAndUpdate(roomId, { gameSession: gameSession })
       let game = activeGames.find(game => game.roomId === roomId)
       if (!game) {
-        game = new GameSession(room)
+        game = new GameSession(roomId, hostId, gameSession.players)
         game.startGame()
       }
     });
 
     socket.on('endGame', async (roomId) => {
+      await Room.findByIdAndUpdate(roomId, { gameSession: null })
       const game = activeGames.find(game => game.roomId === roomId)
       if (game) {
         game.endGame()
         game.sendMessage(`The host has ended the game`)
-      } else {
-        console.log('there is no active game in this room. Check the database')
       }
     });
 
     socket.on('skipPlayer', (roomId, userId) => {
       const game = activeGames.find(game => game.roomId === roomId)
       if (game) {
-        const player = game.players.find(player => player._id.toString() === userId)
+        const player = game.players.find(player => player._id === userId)
         if (player) player.skipped = true
       }
     });
 
-    socket.on('makeMove', async (roomId, moveData) => {
+    socket.on('validateMove', async (roomId, moveData) => {
         const game = activeGames.find(game => game.roomId === roomId)
-        if (game) game.handleMove(moveData);
+        if (game) game.validateMove(moveData);
     });
 
     socket.on('message', async (roomId, messageData) => {
@@ -143,16 +132,19 @@ const letterDistribution = {
   'B': 2, 'C': 2, 'M': 2, 'P': 2, 'F': 2, 'H': 2, 'V': 2, 'W': 2, 'Y': 2, 'K': 1, 'J': 1, 'X': 1, 'Q': 1, 'Z': 1
 }
 const boardSize = 15
+const cooldown = 5 * 1000 // time between turns
 
 class GameSession {
-    constructor(room) {
-        this.roomId = room._id.toString()
-        this.players = [...room.gameSession.players]
+    constructor(roomId, hostId, players) {
+        this.roomId = roomId
+        this.hostId = hostId
+        this.players = players
         this.turnPlayerIndex = 0;
         this.turnNumber = 1
         this.turnDuration = (turnDuration || 60) * 1000 // 60s by default
         this.inactivityCounter = 0
         this.inactivePlayerIds = []
+        this.isOnCooldown = true
         this.isActive = true;
     }
 
@@ -217,13 +209,13 @@ class GameSession {
         board: JSON.parse(JSON.stringify(this.board)),
         leftInBag: this.letterBag.length,
       }
+      io.to(this.roomId).emit('gameStarted', [...this.players]);
       io.to(this.roomId).emit('gameUpdated', sessionData);
       // Send each player's letterBank to them individually
       for (let player of this.players) {
-        const privateId = player._id.toString()
-        io.to(privateId).emit('letterBankUpdated', player.letterBank);
+        io.to(player._id).emit('letterBankUpdated', player.letterBank);
       }
-      this.startTurn()
+      setTimeout(() => {this.startTurn()}, cooldown);
     }
 
     distributeLetters(player, amount) {
@@ -238,13 +230,14 @@ class GameSession {
 
     startTurn() {
         if (!this.isActive) return;  // Prevent turn logic if game is inactive
+        this.isOnCooldown = false // officially enter turn
         const turnPlayer = this.players[this.turnPlayerIndex];
         if (turnPlayer.skipped) { // skip the turn if host marked player as inactive
           this.sendMessage(`Turn ${this.turnNumber}: ${turnPlayer.name} was skipped due to inactivity`)
           this.nextTurn()
           return
         }
-        this.turnEndTime = new Date(Date.now() + this.turnDuration); // 1 minute from now
+        this.turnEndTime = new Date(Date.now() + this.turnDuration); // x seconds from now
         // Clear the previous timeout (if any)
         if (this.turnTimeout) {
             clearTimeout(this.turnTimeout);
@@ -254,17 +247,21 @@ class GameSession {
           turnPlayer: turnPlayer,
           turnEndTime: this.turnEndTime.toISOString(),
           turnNumber: this.turnNumber,
-          inactivePlayerIds: [...this.inactivePlayerIds],
         }
-        io.to(this.roomId).emit('turnStart', sessionData);
+        io.to(this.roomId).emit('turnStarted', sessionData);
         this.sendMessage(`Turn ${this.turnNumber}: ${turnPlayer.name}'s turn has started`)
-        // Set a 1-minute timer
+        // Set a timer
         this.turnTimeout = setTimeout(() => {
             this.handleTurnTimeout();
         }, this.turnDuration);
     }
 
-    handleMove(moveData) {
+    validateMove(moveData) {
+      // if (isValid) etc...
+      this.processMove(moveData)
+    }
+
+    processMove(moveData) {
         // Clear the timeout
         clearTimeout(this.turnTimeout);
         // ...
@@ -273,14 +270,16 @@ class GameSession {
         // reset inactivity counters
         this.inactivityCounter = 0
         turnPlayer.inactiveTurns = 0
-        // Advance to the next player's turn
-        this.nextTurn();
+        // Advance to the next player's turn after cooldown
+        this.isOnCooldown = true
+        io.to(this.roomId).emit('turnEnded');
+        setTimeout(() => {this.nextTurn()}, cooldown);
     }
 
-    handleTurnTimeout() {
+    async handleTurnTimeout() {
         if (!this.isActive) return;  // Skip if game is inactive
         const turnPlayer = this.players[this.turnPlayerIndex]
-        io.to(turnPlayer._id.toString()).emit('turnTimeout');
+        io.to(turnPlayer._id).emit('turnTimedOut', turnPlayer.letterBank);
         // increase inactivity counters
         if (typeof turnPlayer.inactiveTurns !== 'number') turnPlayer.inactiveTurns = 0;
         turnPlayer.inactiveTurns += 1
@@ -288,15 +287,17 @@ class GameSession {
         // end the game if 3 rounds passed with no moves made
         this.inactivityCounter += 1
         if (this.inactivityCounter > this.players.length * turnsUntilSkip) {
+          await Room.findByIdAndUpdate(this.roomId, { gameSession: null })
           this.endGame()
           this.sendMessage(`Game ended due to inactivity of all players`)
           return
         }
         if (turnPlayer.inactiveTurns === turnsUntilSkip) {
           this.inactivePlayerIds.push(turnPlayer._id)
+          io.to(this.hostId).emit('playerCanBeSkipped', this.inactivePlayerIds); // update the host
           this.sendMessage(`${turnPlayer.name} missed ${turnsUntilSkip} turns in a row and may be skipped`)
         }
-        // Advance to the next player's turn
+        // Advance to the next player's turn without cooldown
         this.nextTurn();
     }
     
@@ -308,13 +309,26 @@ class GameSession {
         this.startTurn();
     }
 
-    async endGame() {
-      const room = await Room.findByIdAndUpdate(this.roomId, { gameSession: null }, { new: true })
+    endGame() {
       this.isActive = false;
       clearTimeout(this.turnTimeout); // Stop the current turn timer
       activeGames.splice(activeGames.indexOf(this), 1)
-      io.to(this.roomId).emit('roomUpdated', room);
-  }
+      io.to(this.roomId).emit('gameEnded');
+    }
+
+    getRefreshData(userId) {
+      // this info is not saved in the DB and needs to be resent to user if they refresh the page
+      const sessionData = {
+        turnPlayer: this.isOnCooldown ? null : this.players[this.turnPlayerIndex],
+        turnEndTime: this.isOnCooldown ? null : this.turnEndTime.toISOString(),
+        turnNumber: this.isOnCooldown ? null : this.turnNumber,
+        board: JSON.parse(JSON.stringify(this.board)),
+        leftInBag: this.letterBag.length,
+        letterBank: this.players.find(player => player._id === userId).letterBank,
+        inactivePlayerIds: [...this.inactivePlayerIds], // (only necessary for the host...)
+      }
+      return sessionData
+    }
 }
 
 module.exports = { server };
