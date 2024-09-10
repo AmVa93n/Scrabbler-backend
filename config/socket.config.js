@@ -7,9 +7,6 @@ const io = socketIo(server);
 
 const Message = require('../models/Message.model'); 
 const Room = require('../models/Room.model'); 
-//const Chat = require('../models/Chat.model');
-const User = require('../models/User.model');
-//const Notification = require("../models/Notification.model");
 //const { formatDistanceToNow } = require('date-fns');
 
 io.on('connection', (socket) => {
@@ -27,9 +24,6 @@ io.on('connection', (socket) => {
         io.to(roomId).emit('userJoined', socket.user);
         RoomManager.sendMessage(roomId, `${socket.user.name} joined the room`);
         
-        const roomSocketIds = io.sockets.adapter.rooms.get(roomId);
-        const allSockets = io.sockets.sockets
-        const waitingUsers = Array.from(roomSocketIds).map(id => allSockets.get(id).user)
         const session = activeGames.find(game => game.roomId === roomId)
         if (session) {
           const sessionData = {
@@ -37,10 +31,17 @@ io.on('connection', (socket) => {
             turnEndTime: session.turnEndTime.toISOString(),
             turnNumber: session.turnNumber,
             inactivePlayerIds: [...session.inactivePlayerIds],
+            board: JSON.parse(JSON.stringify(session.board)),
+            leftInBag: session.letterBag.length,
+            letterBank: session.players.find(player => player._id.toString() === socket.user._id).letterBank
           }
-          io.to(roomId).emit('refreshRoom', waitingUsers, sessionData);
+          io.to(socket.user._id).emit('refreshGame', sessionData);
+
         } else {
-          io.to(roomId).emit('refreshRoom', waitingUsers);
+          const roomSocketIds = io.sockets.adapter.rooms.get(roomId);
+          const allSockets = io.sockets.sockets
+          const waitingUsers = Array.from(roomSocketIds).map(id => allSockets.get(id).user)
+          io.to(socket.user._id).emit('refreshRoom', waitingUsers);
         }
         
     });
@@ -63,25 +64,22 @@ io.on('connection', (socket) => {
     socket.on('startGame', async (roomId, gameSession) => {
       const room = await Room.findByIdAndUpdate(roomId, { gameSession: gameSession }, { new: true })
       await room.populate('gameSession.players')
+      io.to(roomId).emit('roomUpdated', room);
       let game = activeGames.find(game => game.roomId === roomId)
       if (!game) {
         game = new GameSession(room)
-        activeGames.push(game)
-        game.sendMessage(`a new game started`)
-        game.startTurn()
+        game.startGame()
       }
-      io.to(roomId).emit('roomUpdated', room);
     });
 
     socket.on('endGame', async (roomId) => {
-      const room = await Room.findByIdAndUpdate(roomId, { gameSession: null }, { new: true })
-      await room.populate('gameSession.players')
       const game = activeGames.find(game => game.roomId === roomId)
       if (game) {
         game.endGame()
         game.sendMessage(`The host has ended the game`)
+      } else {
+        console.log('there is no active game in this room. Check the database')
       }
-      io.to(roomId).emit('roomUpdated', room);
     });
 
     socket.on('skipPlayer', (roomId, userId) => {
@@ -90,7 +88,7 @@ io.on('connection', (socket) => {
         const player = game.players.find(player => player._id.toString() === userId)
         if (player) player.skipped = true
       }
-  });
+    });
 
     socket.on('makeMove', async (roomId, moveData) => {
         const game = activeGames.find(game => game.roomId === roomId)
@@ -138,7 +136,13 @@ class RoomManager {
 }
 
 const activeGames = []
-const turnDuration = 10 // for testing
+const turnsUntilSkip = 3
+const turnDuration = 30
+const letterDistribution = {
+  '': 2, 'E': 12, 'A': 9, 'I': 9, 'O': 8,  'N': 6, 'R': 6, 'T': 6, 'L': 4, 'S': 4, 'U': 4, 'D': 4, 'G': 3, 
+  'B': 2, 'C': 2, 'M': 2, 'P': 2, 'F': 2, 'H': 2, 'V': 2, 'W': 2, 'Y': 2, 'K': 1, 'J': 1, 'X': 1, 'Q': 1, 'Z': 1
+}
+const boardSize = 15
 
 class GameSession {
     constructor(room) {
@@ -163,6 +167,72 @@ class GameSession {
         io.to(this.roomId).emit('chatUpdated', message);
       } catch (err) {
         console.error(err);
+      }
+    }
+
+    createLetterBag() {
+      const letterBag = []
+      let id = 1
+      for (let letter in letterDistribution) {
+        const count = letterDistribution[letter]
+        for (let i=0; i < count; i++) {
+          letterBag.push({id, letter, placed: false})
+          id ++
+        }
+      }
+
+      // Fisher-Yates Shuffle
+      for (let i = letterBag.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1)) // Get a random index from 0 to i
+        // Swap elements using a temporary variable
+        const temp = letterBag[i];
+        letterBag[i] = letterBag[j];
+        letterBag[j] = temp;
+      }
+
+      return letterBag
+    }
+ 
+    createBoard() {
+      return Array.from({ length: boardSize }, (_, row) =>
+        Array.from({ length: boardSize }, (_, col) => ({
+            x: col,
+            y: row,
+            occupied: false,
+            content: null,
+        }))
+      )
+    }
+
+    startGame() {
+      activeGames.push(this)
+      this.letterBag = this.createLetterBag()
+      this.board = this.createBoard()
+      this.sendMessage(`a new game started`)
+
+      for (let player of this.players) {
+        this.distributeLetters(player, 7)
+      }
+      const sessionData = {
+        board: JSON.parse(JSON.stringify(this.board)),
+        leftInBag: this.letterBag.length,
+      }
+      io.to(this.roomId).emit('gameUpdated', sessionData);
+      // Send each player's letterBank to them individually
+      for (let player of this.players) {
+        const privateId = player._id.toString()
+        io.to(privateId).emit('letterBankUpdated', player.letterBank);
+      }
+      this.startTurn()
+    }
+
+    distributeLetters(player, amount) {
+      if (!player.letterBank) player.letterBank = []
+      for (let i=0; i < amount; i++) {
+        if (this.letterBag.length === 0) {
+          break; // Exit if no letters are left in the bag
+        }
+        player.letterBank.push(this.letterBag.pop())
       }
     }
 
@@ -210,21 +280,21 @@ class GameSession {
     handleTurnTimeout() {
         if (!this.isActive) return;  // Skip if game is inactive
         const turnPlayer = this.players[this.turnPlayerIndex]
-        io.to(this.roomId).emit('turnTimeout', turnPlayer);
+        io.to(turnPlayer._id.toString()).emit('turnTimeout');
         // increase inactivity counters
         if (typeof turnPlayer.inactiveTurns !== 'number') turnPlayer.inactiveTurns = 0;
         turnPlayer.inactiveTurns += 1
         this.sendMessage(`${turnPlayer.name}'s turn has timed out (${turnPlayer.inactiveTurns})`)
         // end the game if 3 rounds passed with no moves made
         this.inactivityCounter += 1
-        if (this.inactivityCounter > this.players.length * 3) {
+        if (this.inactivityCounter > this.players.length * turnsUntilSkip) {
           this.endGame()
           this.sendMessage(`Game ended due to inactivity of all players`)
           return
         }
-        if (turnPlayer.inactiveTurns === 1) {
+        if (turnPlayer.inactiveTurns === turnsUntilSkip) {
           this.inactivePlayerIds.push(turnPlayer._id)
-          this.sendMessage(`${turnPlayer.name} missed 3 turns in a row and may be skipped`)
+          this.sendMessage(`${turnPlayer.name} missed ${turnsUntilSkip} turns in a row and may be skipped`)
         }
         // Advance to the next player's turn
         this.nextTurn();
@@ -238,10 +308,12 @@ class GameSession {
         this.startTurn();
     }
 
-    endGame() {
+    async endGame() {
+      const room = await Room.findByIdAndUpdate(this.roomId, { gameSession: null }, { new: true })
       this.isActive = false;
       clearTimeout(this.turnTimeout); // Stop the current turn timer
       activeGames.splice(activeGames.indexOf(this), 1)
+      io.to(this.roomId).emit('roomUpdated', room);
   }
 }
 
