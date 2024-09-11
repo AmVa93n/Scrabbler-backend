@@ -8,6 +8,8 @@ const io = socketIo(server);
 const Message = require('../models/Message.model'); 
 const Room = require('../models/Room.model'); 
 //const { formatDistanceToNow } = require('date-fns');
+const natural = require('natural');
+const wordnet = new natural.WordNet(); // Load WordNet data
 
 io.on('connection', (socket) => {
 
@@ -79,9 +81,9 @@ io.on('connection', (socket) => {
       }
     });
 
-    socket.on('validateMove', async (roomId, moveData) => {
+    socket.on('validateMove', async (roomId, newlyPlacedLetters, updatedBoard) => {
         const game = activeGames.find(game => game.roomId === roomId)
-        if (game) game.validateMove(moveData);
+        if (game) game.validateMove(newlyPlacedLetters, updatedBoard);
     });
 
     socket.on('message', async (roomId, messageData) => {
@@ -126,12 +128,13 @@ class RoomManager {
 
 const activeGames = []
 const turnsUntilSkip = 3
-const turnDuration = 30
+const turnDuration = 1000
 const letterDistribution = {
   '': 2, 'E': 12, 'A': 9, 'I': 9, 'O': 8,  'N': 6, 'R': 6, 'T': 6, 'L': 4, 'S': 4, 'U': 4, 'D': 4, 'G': 3, 
   'B': 2, 'C': 2, 'M': 2, 'P': 2, 'F': 2, 'H': 2, 'V': 2, 'W': 2, 'Y': 2, 'K': 1, 'J': 1, 'X': 1, 'Q': 1, 'Z': 1
 }
 const boardSize = 15
+const bankSize = 7
 const cooldown = 5 * 1000 // time between turns
 
 class GameSession {
@@ -168,7 +171,7 @@ class GameSession {
       for (let letter in letterDistribution) {
         const count = letterDistribution[letter]
         for (let i=0; i < count; i++) {
-          letterBag.push({id, letter, placed: false})
+          letterBag.push({id, letter, isBlank: letter === ''})
           id ++
         }
       }
@@ -256,17 +259,92 @@ class GameSession {
         }, this.turnDuration);
     }
 
-    validateMove(moveData) {
-      // if (isValid) etc...
-      this.processMove(moveData)
+    async validateMove(newlyPlacedLetters, updatedBoard) {
+      const words = this.extractWordsFromBoard(newlyPlacedLetters, updatedBoard);
+      
+      // Convert wordnet.lookup to return a promise
+      function isWordValid(word) {
+        return new Promise((resolve) => {
+            wordnet.lookup(word.toLowerCase(), (results) => {
+                resolve(results.length > 0); // Resolve true if the word is valid, false otherwise
+            });
+        });
+      };
+
+      // Await the results of all word checks
+      const validationResults = await Promise.all(
+          words.map(word => isWordValid(word))
+      );
+
+      // Check if all words are valid
+      const allWordsValid = validationResults.every(result => result);
+
+      if (allWordsValid) {
+        // All words are valid
+        this.updateGame(newlyPlacedLetters, updatedBoard)
+        this.completeTurn(words)
+      } else {
+        // Some words are invalid
+        const turnPlayer = this.players[this.turnPlayerIndex]
+        io.to(turnPlayer._id).emit('moveRejected');
+      }
     }
 
-    processMove(moveData) {
+    extractWordsFromBoard(newlyPlacedLetters, updatedBoard) {
+      const words = [];
+    
+      // Helper function to check if a word contains a new letter
+      function letterPlacedThisTurn(tileSeq) {
+        const newlyPlacedLetterIds = newlyPlacedLetters.map(letter => letter.id)
+        return tileSeq.some(tile => tile.content && newlyPlacedLetterIds.includes(tile.content.id));
+      }
+    
+      // Horizontal words
+      for (let row = 0; row < updatedBoard.length; row++) {
+        let tileSeq = [];
+        for (let col = 0; col < updatedBoard[row].length; col++) {
+          const tile = updatedBoard[row][col];
+          if (tile.content) {
+            tileSeq.push(tile); // Collect the tiles that form a word
+          } else {
+            if (tileSeq.length > 1 && letterPlacedThisTurn(tileSeq)) {
+              words.push(tileSeq.map(tile => tile.content.letter).join('')); // Add valid word
+            }
+            tileSeq = []; // Reset
+          }
+        }
+        if (tileSeq.length > 1 && letterPlacedThisTurn(tileSeq)) {
+          words.push(tileSeq.map(tile => tile.content.letter).join('')); // Add valid word
+        }
+      }
+    
+      // Vertical words
+      for (let col = 0; col < updatedBoard[0].length; col++) {
+        let tileSeq = [];
+        for (let row = 0; row < updatedBoard.length; row++) {
+          const tile = updatedBoard[row][col];
+          if (tile.content) {
+            tileSeq.push(tile); // Collect the tiles that form a word
+          } else {
+            if (tileSeq.length > 1 && letterPlacedThisTurn(tileSeq)) {
+              words.push(tileSeq.map(tile => tile.content.letter).join('')); // Add valid word
+            }
+            tileSeq = []; // Reset
+          }
+        }
+        if (tileSeq.length > 1 && letterPlacedThisTurn(tileSeq)) {
+          words.push(tileSeq.map(tile => tile.content.letter).join('')); // Add valid word
+        }
+      }
+    
+      return words;
+    }
+
+    completeTurn(createdWords) {
         // Clear the timeout
         clearTimeout(this.turnTimeout);
-        // ...
         const turnPlayer = this.players[this.turnPlayerIndex]
-        this.sendMessage(`${turnPlayer.name} has made their move`)
+        this.sendMessage(`${turnPlayer.name} has created ${createdWords.length} words: ${createdWords.join(', ')}`)
         // reset inactivity counters
         this.inactivityCounter = 0
         turnPlayer.inactiveTurns = 0
@@ -276,10 +354,41 @@ class GameSession {
         setTimeout(() => {this.nextTurn()}, cooldown);
     }
 
+    updateGame(newlyPlacedLetters, updatedBoard) {
+      const turnPlayer = this.players[this.turnPlayerIndex]
+      // remove the placed letters from the player's bank and give them the same amount of new letters
+      for (let placedLetter of newlyPlacedLetters) {
+        const letterToRemove = turnPlayer.letterBank.find(letter => letter.id === placedLetter.id)
+        const letterIndex = turnPlayer.letterBank.indexOf(letterToRemove)
+        turnPlayer.letterBank.splice(letterIndex, 1)
+      }
+      const NewLettersNeeded = bankSize - turnPlayer.letterBank.length
+      this.distributeLetters(turnPlayer, NewLettersNeeded)
+      // save the updated board on the server side
+      const newlyPlacedLetterIds = newlyPlacedLetters.map(letter => letter.id)
+      for (let row of updatedBoard) {
+        for (let tile of row) {
+          if (tile.content) {
+            if (newlyPlacedLetterIds.includes(tile.content.id)) {
+              tile.fixed = true; // set the tile to fixed so the letter on it can't be moved anymore
+            }
+          }
+        }
+      }
+      this.board = updatedBoard
+      // update data for players on client side
+      const sessionData = {
+        board: JSON.parse(JSON.stringify(updatedBoard)),
+        leftInBag: this.letterBag.length,
+      }
+      io.to(this.roomId).emit('gameUpdated', sessionData);
+      io.to(turnPlayer._id).emit('letterBankUpdated', turnPlayer.letterBank);
+    }
+
     async handleTurnTimeout() {
         if (!this.isActive) return;  // Skip if game is inactive
         const turnPlayer = this.players[this.turnPlayerIndex]
-        io.to(turnPlayer._id).emit('turnTimedOut', turnPlayer.letterBank);
+        io.to(turnPlayer._id).emit('turnTimedOut', turnPlayer.letterBank, JSON.parse(JSON.stringify(this.board)));
         // increase inactivity counters
         if (typeof turnPlayer.inactiveTurns !== 'number') turnPlayer.inactiveTurns = 0;
         turnPlayer.inactiveTurns += 1
