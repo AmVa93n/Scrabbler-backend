@@ -7,6 +7,7 @@ const io = socketIo(server);
 
 const Message = require('../models/Message.model'); 
 const Room = require('../models/Room.model'); 
+const Board = require('../models/Board.model'); 
 //const { formatDistanceToNow } = require('date-fns');
 const natural = require('natural');
 const wordnet = new natural.WordNet(); // Load WordNet data
@@ -59,7 +60,8 @@ io.on('connection', (socket) => {
       await Room.findByIdAndUpdate(roomId, { gameSession: gameSession })
       let game = activeGames.find(game => game.roomId === roomId)
       if (!game) {
-        game = new GameSession(roomId, hostId, gameSession.players)
+        const boardData = await Board.findById('66e23df8c97b88528c8dfe04')
+        game = new GameSession(roomId, hostId, gameSession.players, boardData, {})
         game.startGame()
       }
     });
@@ -137,28 +139,28 @@ class RoomManager {
 }
 
 const activeGames = []
-const turnsUntilSkip = 3
-const turnDuration = 60
-const letterDistribution = {
+const defaultDistribution = {
   '': 2, 'E': 12, 'A': 9, 'I': 9, 'O': 8,  'N': 6, 'R': 6, 'T': 6, 'L': 4, 'S': 4, 'U': 4, 'D': 4, 'G': 3, 
   'B': 2, 'C': 2, 'M': 2, 'P': 2, 'F': 2, 'H': 2, 'V': 2, 'W': 2, 'Y': 2, 'K': 1, 'J': 1, 'X': 1, 'Q': 1, 'Z': 1
 }
-const boardSize = 15
-const bankSize = 7
-const cooldown = 3 // time between turns
 
 class GameSession {
-    constructor(roomId, hostId, players) {
+    constructor(roomId, hostId, players, boardData, ruleset) {
+        const { letterDistribution, turnDuration, turnsUntilSkip } = ruleset
         this.roomId = roomId
         this.hostId = hostId
         this.players = players
         this.turnPlayerIndex = 0;
         this.turnNumber = 1
-        this.turnDuration = turnDuration * 1000 
-        this.cooldown = cooldown * 1000
-        this.inactivityCounter = 0
+        this.turnDuration = (turnDuration || 60) * 1000 
+        this.turnsUntilSkip = (turnsUntilSkip || 3)
+        this.cooldown = 3 * 1000 // time between turns
         this.inactivePlayerIds = []
+        this.passedTurns = 0
+        this.bankSize = 7
         this.isOnCooldown = true
+        this.letterBag = this.createLetterBag((letterDistribution || defaultDistribution))
+        this.board = this.createBoard(boardData)
         this.isActive = true;
     }
 
@@ -176,7 +178,7 @@ class GameSession {
       }
     }
 
-    createLetterBag() {
+    createLetterBag(letterDistribution) {
       const letterBag = []
       let id = 1
       for (let letter in letterDistribution) {
@@ -196,28 +198,25 @@ class GameSession {
         letterBag[j] = temp;
       }
 
-      return letterBag
-    }
-
-    createLetterBagTest() {
-      return this.createLetterBag().slice(0, 17)
+      //return letterBag
+      return letterBag.slice(0, 17)
     }
  
-    createBoard() {
-      return Array.from({ length: boardSize }, (_, row) =>
-        Array.from({ length: boardSize }, (_, col) => ({
+    createBoard(boardData) {
+      const { size, bonusTiles } = boardData
+      return Array.from({ length: size }, (_, row) =>
+        Array.from({ length: size }, (_, col) => ({
             x: col,
             y: row,
             occupied: false,
             content: null,
+            bonusType: bonusTiles.find(bonusTile => bonusTile.x === col && bonusTile.y === row)?.bonusType
         }))
       )
     }
 
     startGame() {
       activeGames.push(this)
-      this.letterBag = this.createLetterBagTest()
-      this.board = this.createBoard()
       this.sendMessage(`The host has started a new game 🎲`, `New Game`)
 
       for (let player of this.players) {
@@ -252,6 +251,11 @@ class GameSession {
         const turnPlayer = this.players[this.turnPlayerIndex];
         if (turnPlayer.skipped) { // skip the turn if host marked player as inactive
           this.sendMessage(`${turnPlayer.name} was skipped due to inactivity ❌`, `Turn ${this.turnNumber}`)
+          this.nextTurn()
+          return
+        }
+        if (turnPlayer.letterBank.length === 0) { // skip the turn if player is out of letters
+          this.sendMessage(`${turnPlayer.name} was skipped because they ran out of letters ❌`, `Turn ${this.turnNumber}`)
           this.nextTurn()
           return
         }
@@ -357,19 +361,6 @@ class GameSession {
       return words;
     }
 
-    completeTurn() {
-        // Clear the timeout
-        clearTimeout(this.turnTimeout);
-        // reset inactivity counters
-        const turnPlayer = this.players[this.turnPlayerIndex]
-        this.inactivityCounter = 0
-        turnPlayer.inactiveTurns = 0
-        // Advance to the next player's turn after cooldown
-        this.isOnCooldown = true
-        io.to(this.roomId).emit('turnEnded');
-        setTimeout(() => {this.nextTurn()}, this.cooldown);
-    }
-
     updateGame(newlyPlacedLetters, updatedBoard) {
       const turnPlayer = this.players[this.turnPlayerIndex]
       // remove the placed letters from the player's bank and give them the same amount of new letters
@@ -378,7 +369,7 @@ class GameSession {
         const letterIndex = turnPlayer.letterBank.indexOf(letterToRemove)
         turnPlayer.letterBank.splice(letterIndex, 1)
       }
-      const NewLettersNeeded = bankSize - turnPlayer.letterBank.length
+      const NewLettersNeeded = this.bankSize - turnPlayer.letterBank.length
       this.distributeLetters(turnPlayer, NewLettersNeeded)
       // save the updated board on the server side
       const newlyPlacedLetterIds = newlyPlacedLetters.map(letter => letter.id)
@@ -422,7 +413,27 @@ class GameSession {
     passTurn() {
       io.to(turnPlayer._id).emit('turnPassed', turnPlayer.letterBank, JSON.parse(JSON.stringify(this.board)));
       this.sendMessage(`${turnPlayer.name} passed`, `Turn ${this.turnNumber}`)
-      this.completeTurn()
+      this.completeTurn(true)
+    }
+
+    async completeTurn(isPassed) {
+      // Clear the timeout
+      clearTimeout(this.turnTimeout);
+      // reset inactivity counters
+      const turnPlayer = this.players[this.turnPlayerIndex]
+      turnPlayer.inactiveTurns = 0
+      // if turn was passed without replacing any letters
+      if (isPassed) { this.passedTurns += 1 } else { this.passedTurns = 0}
+      if (this.passedTurns === this.players.length) { // no player can make any more words
+        await Room.findByIdAndUpdate(this.roomId, { gameSession: null })
+        this.endGame()
+        this.sendMessage(`No player is able to create more words. the winner is ${this.players[0]} 🏆`, `Game Over`)
+        return
+      }
+      // Advance to the next player's turn after cooldown
+      this.isOnCooldown = true
+      io.to(this.roomId).emit('turnEnded');
+      setTimeout(() => {this.nextTurn()}, this.cooldown);
     }
 
     async handleTurnTimeout() {
@@ -434,15 +445,14 @@ class GameSession {
         // increase inactivity counter
         if (typeof turnPlayer.inactiveTurns !== 'number') turnPlayer.inactiveTurns = 0;
         turnPlayer.inactiveTurns += 1
-        if (turnPlayer.inactiveTurns === turnsUntilSkip) {
+        if (turnPlayer.inactiveTurns === this.turnsUntilSkip) {
           this.inactivePlayerIds.push(turnPlayer._id)
           io.to(this.hostId).emit('playerCanBeSkipped', this.inactivePlayerIds); // update the host
-          this.sendMessage(`${turnPlayer.name} missed ${turnsUntilSkip} turns in a row and may be skipped ⚠️`)
+          this.sendMessage(`${turnPlayer.name} missed ${this.turnsUntilSkip} turns in a row and may be skipped ⚠️`)
         }
 
-        // end the game if 3 rounds passed with no moves made
-        this.inactivityCounter += 1
-        if (this.inactivityCounter === this.players.length * turnsUntilSkip) {
+        // end the game if x rounds passed with no moves made by any player
+        if (this.players.every(player => player.inactiveTurns >= this.turnsUntilSkip)) {
           await Room.findByIdAndUpdate(this.roomId, { gameSession: null })
           this.endGame()
           this.sendMessage(`The game ended due to inactivity of all players 😴`, `Game Over`)
