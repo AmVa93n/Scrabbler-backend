@@ -7,6 +7,8 @@ const fileUploader = require("../config/cloudinary.config.js");
 // Require the User model in order to interact with the database
 const User = require("../models/User.model");
 const Room = require("../models/Room.model");
+const Board = require("../models/Board.model");
+const LetterBag = require("../models/LetterBag.model");
 
 // Require necessary (isAuthenticated) middleware in order to control access to specific routes
 const { isAuthenticated } = require("../middleware/jwt.middleware.js");
@@ -100,7 +102,9 @@ router.post("/room", isAuthenticated, async (req, res, next) => {
 router.get("/room/:roomId", isAuthenticated, async (req, res, next) => {
   try {
     const roomId = req.params.roomId;
-    const roomData = await Room.findById(roomId).populate('gameSession.players')
+    const roomData = await Room.findById(roomId)
+      .populate('gameSession.players', 'name profilePic')
+      .populate('gameSession.settings.board', 'size')
       .populate({
         path: 'messages',
         populate: {
@@ -155,6 +159,34 @@ router.delete("/room/:roomId", isAuthenticated, async (req, res, next) => {
 
   } catch (err) {
     next(err);  // Pass the error to the error-handling middleware
+  }
+});
+
+router.get("/boards", isAuthenticated, async (req, res, next) => {
+  try {
+    const boardsData = await Board.find({creator: req.payload._id});
+    
+    if (!boardsData) {
+      return res.status(404).json({ message: "Boards not found" });
+    }
+
+    res.status(200).json({ boards: boardsData });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get("/letterbags", isAuthenticated, async (req, res, next) => {
+  try {
+    const letterBagsData = await LetterBag.find({creator: req.payload._id});
+    
+    if (!letterBagsData) {
+      return res.status(404).json({ message: "Letter Bags not found" });
+    }
+    
+    res.status(200).json({ letterBags: letterBagsData });
+  } catch (err) {
+    next(err);
   }
 });
 

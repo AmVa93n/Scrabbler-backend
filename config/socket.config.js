@@ -8,6 +8,7 @@ const io = socketIo(server);
 const Message = require('../models/Message.model'); 
 const Room = require('../models/Room.model'); 
 const Board = require('../models/Board.model'); 
+const LetterBag = require('../models/LetterBag.model'); 
 //const { formatDistanceToNow } = require('date-fns');
 const natural = require('natural');
 const wordnet = new natural.WordNet(); // Load WordNet data
@@ -60,8 +61,7 @@ io.on('connection', (socket) => {
       await Room.findByIdAndUpdate(roomId, { gameSession: gameSession })
       let game = activeGames.find(game => game.roomId === roomId)
       if (!game) {
-        const boardData = await Board.findById('66e23df8c97b88528c8dfe04')
-        game = new GameSession(roomId, hostId, gameSession.players, boardData, {})
+        game = new GameSession(roomId, hostId, gameSession.players, gameSession.settings)
         game.startGame()
       }
     });
@@ -139,14 +139,10 @@ class RoomManager {
 }
 
 const activeGames = []
-const defaultDistribution = {
-  '': 2, 'E': 12, 'A': 9, 'I': 9, 'O': 8,  'N': 6, 'R': 6, 'T': 6, 'L': 4, 'S': 4, 'U': 4, 'D': 4, 'G': 3, 
-  'B': 2, 'C': 2, 'M': 2, 'P': 2, 'F': 2, 'H': 2, 'V': 2, 'W': 2, 'Y': 2, 'K': 1, 'J': 1, 'X': 1, 'Q': 1, 'Z': 1
-}
 
 class GameSession {
-    constructor(roomId, hostId, players, boardData, ruleset) {
-        const { letterDistribution, turnDuration, turnsUntilSkip } = ruleset
+    constructor(roomId, hostId, players, settings) {
+        const { board, letterBag, turnDuration, turnsUntilSkip, bankSize } = settings
         this.roomId = roomId
         this.hostId = hostId
         this.players = players
@@ -154,13 +150,13 @@ class GameSession {
         this.turnNumber = 1
         this.turnDuration = (turnDuration || 60) * 1000 
         this.turnsUntilSkip = (turnsUntilSkip || 3)
+        this.bankSize = (bankSize || 7)
         this.cooldown = 3 * 1000 // time between turns
         this.inactivePlayerIds = []
         this.passedTurns = 0
-        this.bankSize = 7
         this.isOnCooldown = true
-        this.letterBag = this.createLetterBag((letterDistribution || defaultDistribution))
-        this.board = this.createBoard(boardData)
+        this.letterBag = this.createLetterBag(letterBag)
+        this.board = this.createBoard(board)
         this.isActive = true;
     }
 
@@ -178,14 +174,18 @@ class GameSession {
       }
     }
 
-    createLetterBag(letterDistribution) {
+    createLetterBag(letterBagData) {
       const letterBag = []
       let id = 1
-      for (let letter in letterDistribution) {
-        const count = letterDistribution[letter]
-        for (let i=0; i < count; i++) {
-          letterBag.push({id, letter, isBlank: letter === ''})
-          id ++
+      for (let { letter, count, points } of letterBagData.letterData) {
+        for (let i = 0; i < count; i++) {
+          letterBag.push({
+            id,
+            letter,
+            isBlank: letter === '',
+            points
+          });
+          id++;
         }
       }
 
@@ -198,8 +198,8 @@ class GameSession {
         letterBag[j] = temp;
       }
 
-      //return letterBag
-      return letterBag.slice(0, 17)
+      return letterBag
+      //return letterBag.slice(0, 17)
     }
  
     createBoard(boardData) {
@@ -220,7 +220,7 @@ class GameSession {
       this.sendMessage(`The host has started a new game 🎲`, `New Game`)
 
       for (let player of this.players) {
-        this.distributeLetters(player, 7)
+        this.distributeLetters(player, this.bankSize)
       }
       const sessionData = {
         board: JSON.parse(JSON.stringify(this.board)),
@@ -411,6 +411,7 @@ class GameSession {
     }
 
     passTurn() {
+      const turnPlayer = this.players[this.turnPlayerIndex]
       io.to(turnPlayer._id).emit('turnPassed', turnPlayer.letterBank, JSON.parse(JSON.stringify(this.board)));
       this.sendMessage(`${turnPlayer.name} passed`, `Turn ${this.turnNumber}`)
       this.completeTurn(true)
@@ -427,7 +428,7 @@ class GameSession {
       if (this.passedTurns === this.players.length) { // no player can make any more words
         await Room.findByIdAndUpdate(this.roomId, { gameSession: null })
         this.endGame()
-        this.sendMessage(`No player is able to create more words. the winner is ${this.players[0]} 🏆`, `Game Over`)
+        this.sendMessage(`No player is able to create more words. the winner is ${this.players[0].name} 🏆`, `Game Over`)
         return
       }
       // Advance to the next player's turn after cooldown

@@ -77,7 +77,7 @@ const boardSchema = new Schema(
     size: { type: Number, default: 15 },
     bonusTiles: {
         type: [{ x: Number, y: Number, bonusType: String }],
-        default: defaultBonusTiles, // Set the default function
+        default: defaultBonusTiles,
     },
   },
   {
