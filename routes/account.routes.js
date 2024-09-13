@@ -104,7 +104,6 @@ router.get("/room/:roomId", isAuthenticated, async (req, res, next) => {
     const roomId = req.params.roomId;
     const roomData = await Room.findById(roomId)
       .populate('gameSession.players', 'name profilePic')
-      .populate('gameSession.settings.board', 'size')
       .populate({
         path: 'messages',
         populate: {

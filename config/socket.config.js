@@ -7,8 +7,6 @@ const io = socketIo(server);
 
 const Message = require('../models/Message.model'); 
 const Room = require('../models/Room.model'); 
-const Board = require('../models/Board.model'); 
-const LetterBag = require('../models/LetterBag.model'); 
 //const { formatDistanceToNow } = require('date-fns');
 const natural = require('natural');
 const wordnet = new natural.WordNet(); // Load WordNet data
@@ -225,8 +223,9 @@ class GameSession {
       const sessionData = {
         board: JSON.parse(JSON.stringify(this.board)),
         leftInBag: this.letterBag.length,
+        players: this.players,
       }
-      io.to(this.roomId).emit('gameStarted', [...this.players]);
+      io.to(this.roomId).emit('gameStarted');
       io.to(this.roomId).emit('gameUpdated', sessionData);
       // Send each player's letterBank to them individually
       for (let player of this.players) {
@@ -279,7 +278,8 @@ class GameSession {
     }
 
     async validateMove(newlyPlacedLetters, updatedBoard) {
-      const words = this.extractWordsFromBoard(newlyPlacedLetters, updatedBoard);
+      const wordsWithScores = this.extractWordsFromBoard(newlyPlacedLetters, updatedBoard)
+      const words = wordsWithScores.map(w => w.word)
       
       // Convert wordnet.lookup to return a promise
       function isWordValid(word) {
@@ -301,10 +301,15 @@ class GameSession {
 
       if (allWordsValid) {
         // All words are valid
-        this.updateGame(newlyPlacedLetters, updatedBoard)
         const wordStr = words.length === 1 ? 'word' : 'words'
-        this.sendMessage(`${turnPlayer.name} created ${words.length} ${wordStr}: ${words.join(', ')} 💡`, `Turn ${this.turnNumber}`)
-        this.completeTurn()
+        const wordScoreList = wordsWithScores.map(w => `${w.word} (${w.score} points)`).join('\n');
+        const totalScore = wordsWithScores.reduce((sum, w) => sum + w.score, 0);
+        this.updateGame(newlyPlacedLetters, updatedBoard, totalScore)
+        this.sendMessage(
+          `${turnPlayer.name} created ${words.length} ${wordStr} 💡\n${wordScoreList}\nTotal score: ${totalScore} points`,
+          `Turn ${this.turnNumber}`
+        );
+        this.endTurn()
       } else {
         // Some words are invalid
         io.to(turnPlayer._id).emit('moveRejected');
@@ -312,14 +317,14 @@ class GameSession {
     }
 
     extractWordsFromBoard(newlyPlacedLetters, updatedBoard) {
-      const words = [];
-    
+      const wordsWithScores = [];
+      
       // Helper function to check if a word contains a new letter
       function letterPlacedThisTurn(tileSeq) {
-        const newlyPlacedLetterIds = newlyPlacedLetters.map(letter => letter.id)
+        const newlyPlacedLetterIds = newlyPlacedLetters.map(letter => letter.id);
         return tileSeq.some(tile => tile.content && newlyPlacedLetterIds.includes(tile.content.id));
       }
-    
+      
       // Horizontal words
       for (let row = 0; row < updatedBoard.length; row++) {
         let tileSeq = [];
@@ -329,13 +334,17 @@ class GameSession {
             tileSeq.push(tile); // Collect the tiles that form a word
           } else {
             if (tileSeq.length > 1 && letterPlacedThisTurn(tileSeq)) {
-              words.push(tileSeq.map(tile => tile.content.letter).join('')); // Add valid word
+              const word = tileSeq.map(tile => tile.content.letter).join('');
+              const score = this.calculateWordScore(tileSeq);
+              wordsWithScores.push({ word, score });
             }
             tileSeq = []; // Reset
           }
         }
         if (tileSeq.length > 1 && letterPlacedThisTurn(tileSeq)) {
-          words.push(tileSeq.map(tile => tile.content.letter).join('')); // Add valid word
+          const word = tileSeq.map(tile => tile.content.letter).join('');
+          const score = this.calculateWordScore(tileSeq);
+          wordsWithScores.push({ word, score });
         }
       }
     
@@ -348,20 +357,58 @@ class GameSession {
             tileSeq.push(tile); // Collect the tiles that form a word
           } else {
             if (tileSeq.length > 1 && letterPlacedThisTurn(tileSeq)) {
-              words.push(tileSeq.map(tile => tile.content.letter).join('')); // Add valid word
+              const word = tileSeq.map(tile => tile.content.letter).join('');
+              const score = this.calculateWordScore(tileSeq);
+              wordsWithScores.push({ word, score });
             }
             tileSeq = []; // Reset
           }
         }
         if (tileSeq.length > 1 && letterPlacedThisTurn(tileSeq)) {
-          words.push(tileSeq.map(tile => tile.content.letter).join('')); // Add valid word
+          const word = tileSeq.map(tile => tile.content.letter).join('');
+          const score = this.calculateWordScore(tileSeq);
+          wordsWithScores.push({ word, score });
         }
       }
-    
-      return words;
+      
+      return wordsWithScores;
     }
 
-    updateGame(newlyPlacedLetters, updatedBoard) {
+    calculateWordScore(tileSeq) {
+      let wordScore = 0;
+      let wordMultiplier = 1;
+
+      tileSeq.forEach(tile => {
+        const letterScore = tile.content.points;
+        
+        // Check if this tile was placed during this turn
+        if (!tile.fixed) {
+          // Apply the bonus based on tile.bonusType
+          if (tile.bonusType === 'doubleLetter') {
+            wordScore += letterScore * 2;
+          } else if (tile.bonusType === 'tripleLetter') {
+            wordScore += letterScore * 3;
+          } else if (tile.bonusType === 'doubleWord') {
+            wordScore += letterScore;
+            wordMultiplier *= 2; // Double the entire word score
+          } else if (tile.bonusType === 'tripleWord') {
+            wordScore += letterScore;
+            wordMultiplier *= 3; // Triple the entire word score
+          } else {
+            // No bonus, just add the letter score
+            wordScore += letterScore;
+          }
+        } else {
+          // No bonus for pre-existing letters, just add the letter score
+          wordScore += letterScore;
+        }
+      });
+
+      // Apply the word multiplier (if any)
+      return wordScore * wordMultiplier;
+    }
+
+    updateGame(newlyPlacedLetters, updatedBoard, turnScore) {
       const turnPlayer = this.players[this.turnPlayerIndex]
       // remove the placed letters from the player's bank and give them the same amount of new letters
       for (let placedLetter of newlyPlacedLetters) {
@@ -383,10 +430,14 @@ class GameSession {
         }
       }
       this.board = updatedBoard
+      // update player score
+      if (typeof turnPlayer.score !== 'number') turnPlayer.score = 0;
+      turnPlayer.score += turnScore
       // update data for players on client side
       const sessionData = {
         board: JSON.parse(JSON.stringify(updatedBoard)),
         leftInBag: this.letterBag.length,
+        players: this.players
       }
       io.to(this.roomId).emit('gameUpdated', sessionData);
       io.to(turnPlayer._id).emit('letterBankUpdated', turnPlayer.letterBank);
@@ -407,17 +458,17 @@ class GameSession {
       this.distributeLetters(turnPlayer, lettersToReplace.length)
       io.to(turnPlayer._id).emit('turnPassed', turnPlayer.letterBank, JSON.parse(JSON.stringify(this.board)));
       this.sendMessage(`${turnPlayer.name} passed and replaced ${lettersToReplace.length} letters 🔄`, `Turn ${this.turnNumber}`)
-      this.completeTurn()
+      this.endTurn()
     }
 
     passTurn() {
       const turnPlayer = this.players[this.turnPlayerIndex]
       io.to(turnPlayer._id).emit('turnPassed', turnPlayer.letterBank, JSON.parse(JSON.stringify(this.board)));
       this.sendMessage(`${turnPlayer.name} passed`, `Turn ${this.turnNumber}`)
-      this.completeTurn(true)
+      this.endTurn(true)
     }
 
-    async completeTurn(isPassed) {
+    async endTurn(isPassed) {
       // Clear the timeout
       clearTimeout(this.turnTimeout);
       // reset inactivity counters
@@ -490,6 +541,7 @@ class GameSession {
         board: JSON.parse(JSON.stringify(this.board)),
         leftInBag: this.letterBag.length,
         letterBank: this.players.find(player => player._id === userId).letterBank,
+        players: this.players, // because scores etc. are not saved in DB
         inactivePlayerIds: [...this.inactivePlayerIds], // (only necessary for the host...)
       }
       return sessionData
