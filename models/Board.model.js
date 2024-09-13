@@ -16,6 +16,7 @@ const defaultBonusTiles = [
     { x: 2, y: 2, bonusType: 'doubleWord' },
     { x: 3, y: 3, bonusType: 'doubleWord' },
     { x: 4, y: 4, bonusType: 'doubleWord' },
+    { x: 7, y: 7, bonusType: 'doubleWord' },
     { x: 10, y: 10, bonusType: 'doubleWord' },
     { x: 11, y: 11, bonusType: 'doubleWord' },
     { x: 12, y: 12, bonusType: 'doubleWord' },

@@ -81,9 +81,9 @@ io.on('connection', (socket) => {
       }
     });
 
-    socket.on('validateMove', async (roomId, newlyPlacedLetters, updatedBoard) => {
+    socket.on('validateMove', async (roomId, newlyPlacedLetters, updatedBoard, wordsWithScores) => {
         const game = activeGames.find(game => game.roomId === roomId)
-        if (game) game.validateMove(newlyPlacedLetters, updatedBoard);
+        if (game) game.validateMove(newlyPlacedLetters, updatedBoard, wordsWithScores);
     });
 
     socket.on('replaceLetters', async (roomId, lettersToReplace) => {
@@ -277,8 +277,7 @@ class GameSession {
         }, this.turnDuration);
     }
 
-    async validateMove(newlyPlacedLetters, updatedBoard) {
-      const wordsWithScores = this.extractWordsFromBoard(newlyPlacedLetters, updatedBoard)
+    async validateMove(newlyPlacedLetters, updatedBoard, wordsWithScores) {
       const words = wordsWithScores.map(w => w.word)
       
       // Convert wordnet.lookup to return a promise
@@ -314,98 +313,6 @@ class GameSession {
         // Some words are invalid
         io.to(turnPlayer._id).emit('moveRejected');
       }
-    }
-
-    extractWordsFromBoard(newlyPlacedLetters, updatedBoard) {
-      const wordsWithScores = [];
-      
-      // Helper function to check if a word contains a new letter
-      function letterPlacedThisTurn(tileSeq) {
-        const newlyPlacedLetterIds = newlyPlacedLetters.map(letter => letter.id);
-        return tileSeq.some(tile => tile.content && newlyPlacedLetterIds.includes(tile.content.id));
-      }
-      
-      // Horizontal words
-      for (let row = 0; row < updatedBoard.length; row++) {
-        let tileSeq = [];
-        for (let col = 0; col < updatedBoard[row].length; col++) {
-          const tile = updatedBoard[row][col];
-          if (tile.content) {
-            tileSeq.push(tile); // Collect the tiles that form a word
-          } else {
-            if (tileSeq.length > 1 && letterPlacedThisTurn(tileSeq)) {
-              const word = tileSeq.map(tile => tile.content.letter).join('');
-              const score = this.calculateWordScore(tileSeq);
-              wordsWithScores.push({ word, score });
-            }
-            tileSeq = []; // Reset
-          }
-        }
-        if (tileSeq.length > 1 && letterPlacedThisTurn(tileSeq)) {
-          const word = tileSeq.map(tile => tile.content.letter).join('');
-          const score = this.calculateWordScore(tileSeq);
-          wordsWithScores.push({ word, score });
-        }
-      }
-    
-      // Vertical words
-      for (let col = 0; col < updatedBoard[0].length; col++) {
-        let tileSeq = [];
-        for (let row = 0; row < updatedBoard.length; row++) {
-          const tile = updatedBoard[row][col];
-          if (tile.content) {
-            tileSeq.push(tile); // Collect the tiles that form a word
-          } else {
-            if (tileSeq.length > 1 && letterPlacedThisTurn(tileSeq)) {
-              const word = tileSeq.map(tile => tile.content.letter).join('');
-              const score = this.calculateWordScore(tileSeq);
-              wordsWithScores.push({ word, score });
-            }
-            tileSeq = []; // Reset
-          }
-        }
-        if (tileSeq.length > 1 && letterPlacedThisTurn(tileSeq)) {
-          const word = tileSeq.map(tile => tile.content.letter).join('');
-          const score = this.calculateWordScore(tileSeq);
-          wordsWithScores.push({ word, score });
-        }
-      }
-      
-      return wordsWithScores;
-    }
-
-    calculateWordScore(tileSeq) {
-      let wordScore = 0;
-      let wordMultiplier = 1;
-
-      tileSeq.forEach(tile => {
-        const letterScore = tile.content.points;
-        
-        // Check if this tile was placed during this turn
-        if (!tile.fixed) {
-          // Apply the bonus based on tile.bonusType
-          if (tile.bonusType === 'doubleLetter') {
-            wordScore += letterScore * 2;
-          } else if (tile.bonusType === 'tripleLetter') {
-            wordScore += letterScore * 3;
-          } else if (tile.bonusType === 'doubleWord') {
-            wordScore += letterScore;
-            wordMultiplier *= 2; // Double the entire word score
-          } else if (tile.bonusType === 'tripleWord') {
-            wordScore += letterScore;
-            wordMultiplier *= 3; // Triple the entire word score
-          } else {
-            // No bonus, just add the letter score
-            wordScore += letterScore;
-          }
-        } else {
-          // No bonus for pre-existing letters, just add the letter score
-          wordScore += letterScore;
-        }
-      });
-
-      // Apply the word multiplier (if any)
-      return wordScore * wordMultiplier;
     }
 
     updateGame(newlyPlacedLetters, updatedBoard, turnScore) {
