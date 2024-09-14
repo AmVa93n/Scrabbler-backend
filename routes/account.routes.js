@@ -103,7 +103,7 @@ router.get("/room/:roomId", isAuthenticated, async (req, res, next) => {
   try {
     const roomId = req.params.roomId;
     const roomData = await Room.findById(roomId)
-      .populate('gameSession.players', 'name profilePic')
+      .populate('gameSession')
       .populate({
         path: 'messages',
         populate: {
@@ -111,11 +111,11 @@ router.get("/room/:roomId", isAuthenticated, async (req, res, next) => {
           select: 'name profilePic',
         }
       });
-    
+      
     if (!roomData) {
       return res.status(404).json({ message: "Room not found" });
     }
-
+    
     res.status(200).json({ room: roomData });
   } catch (err) {
     next(err);  // Pass the error to the error-handling middleware
@@ -187,6 +187,10 @@ router.get("/letterbags", isAuthenticated, async (req, res, next) => {
   } catch (err) {
     next(err);
   }
+});
+
+router.get("/ping", isAuthenticated, async (req, res, next) => {
+  res.status(200).send() // this is just to keep the server from spinning down
 });
 
 module.exports = router;

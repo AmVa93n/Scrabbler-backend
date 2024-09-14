@@ -62,7 +62,7 @@ io.on('connection', (socket) => {
       await Room.findByIdAndUpdate(roomId, { gameSession: newGame })
       let game = activeGames.find(game => game.roomId === roomId)
       if (!game) {
-        game = new GameSession(roomId, hostId, gameSession.players, gameSession.settings)
+        game = new GameSession(newGame._id, roomId, hostId, players, settings)
         game.startGame()
       }
     });
@@ -72,6 +72,9 @@ io.on('connection', (socket) => {
       if (game) {
         game.endGame()
         game.sendMessage(`The host has ended the game ⛔`, `Game Over`)
+      } else { // fallback in case game lost from server memory
+        RoomManager.endGame(this.roomId)
+        RoomManager.sendMessage(`The host has ended the game ⛔`, `Game Over`)
       }
     });
 
@@ -136,13 +139,19 @@ class RoomManager {
         console.error(err);
       }
   }
+
+  static async endGame(roomId) {
+    await Room.findByIdAndUpdate(roomId, { gameSession: null })
+    io.to(roomId).emit('gameEnded');
+  }
 }
 
 const activeGames = []
 
 class GameSession {
-    constructor(roomId, hostId, players, settings) {
+    constructor(gameId, roomId, hostId, players, settings) {
         const { board, letterBag, turnDuration, turnsUntilSkip, bankSize } = settings
+        this.gameId = gameId
         this.roomId = roomId
         this.hostId = hostId
         this.players = players
@@ -435,8 +444,17 @@ class GameSession {
       this.isActive = false;
       clearTimeout(this.turnTimeout); // Stop the current turn timer
       activeGames.splice(activeGames.indexOf(this), 1)
-      await Room.findByIdAndUpdate(roomId, { gameSession: null })
-      io.to(this.roomId).emit('gameEnded');
+      const state = {
+        turnPlayerIndex: this.turnPlayerIndex,
+        turnEndTime: this.turnEndTime,
+        turnNumber: this.turnNumber,
+        board: this.board,
+        leftInBag: this.letterBag.length,
+        passedTurns: this.passedTurns,
+        isOnCooldown: this.isOnCooldown,
+      }
+      await Game.findOneAndUpdate(this.gameId,{ state })
+      RoomManager.endGame(this.roomId)
     }
 
     getRefreshData(userId) {
