@@ -1,0 +1,59 @@
+const { Schema, model } = require("mongoose");
+
+const gameSchema = new Schema(
+  {
+    roomId: { type: String },
+    hostId: { type: String },
+    players: [{ 
+        _id: String, 
+        name: String, 
+        profilePic: String,
+        letterBank: [{
+            id: { type: Number },
+            letter: { type: String },
+            points: { type: Number },
+            isBlank: { type: Boolean },
+        }],
+        score: Number,
+        inactiveTurns: String,
+        inactive: Boolean,
+        skipped: Boolean,
+    }],
+    settings: {
+        board: { type: Schema.Types.ObjectId, ref: 'Board'},
+        letterBag: { type: Schema.Types.ObjectId, ref: 'LetterBag'},
+        turnDuration: { type: Number },
+        turnsUntilSkip: { type: Number },
+        bankSize: { type: Number }
+    },
+    state: {
+        turnPlayerIndex: { type: Number },
+        turnEndTime: { type: Date },
+        turnNumber: { type: Number },
+        board: [[{ 
+            x: Number,
+            y: Number,
+            occupied: Boolean,
+            content: {
+                id: { type: Number },
+                letter: { type: String },
+                points: { type: Number },
+                isBlank: { type: Boolean },
+            },
+            bonusType: String,
+            fixed: Boolean,
+        }]],
+        leftInBag: { type: Number },
+        passedTurns: { type: Number },
+        isOnCooldown: { type: Boolean },
+    },
+  },
+  {
+    // this second object adds extra properties: `createdAt` and `updatedAt`
+    timestamps: true,
+  }
+);
+
+const Game = model("Game", gameSchema);
+
+module.exports = Game;

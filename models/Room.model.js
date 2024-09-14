@@ -1,20 +1,10 @@
 const { Schema, model } = require("mongoose");
-const { settings } = require("../app");
 
 const roomSchema = new Schema(
   {
     creator: { type: Schema.Types.ObjectId, ref: 'User'},
     name: { type: String, required: true },
-    gameSession: { 
-      players: [{ type: Schema.Types.ObjectId, ref: 'User' }],
-      settings: {
-        board: { type: Schema.Types.ObjectId, ref: 'Board'},
-        letterBag: { type: Schema.Types.ObjectId, ref: 'LetterBag'},
-        turnDuration: { type: Number },
-        turnsUntilSkip: { type: Number },
-        bankSize: { type: Number }
-      }
-    },
+    gameSession: { type: Schema.Types.ObjectId, ref: 'Game' },
     messages: [{ type: Schema.Types.ObjectId, ref: 'Message' }],
     kickedUsers: [{ type: Schema.Types.ObjectId, ref: 'User' }],
   },

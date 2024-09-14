@@ -7,6 +7,7 @@ const io = socketIo(server);
 
 const Message = require('../models/Message.model'); 
 const Room = require('../models/Room.model'); 
+const Game = require('../models/Game.model'); 
 //const { formatDistanceToNow } = require('date-fns');
 const natural = require('natural');
 const wordnet = new natural.WordNet(); // Load WordNet data
@@ -56,7 +57,9 @@ io.on('connection', (socket) => {
     });
 
     socket.on('startGame', async (roomId, hostId, gameSession) => {
-      await Room.findByIdAndUpdate(roomId, { gameSession: gameSession })
+      const { players, settings } = gameSession
+      const newGame = await Game.create({roomId, hostId, players, settings})
+      await Room.findByIdAndUpdate(roomId, { gameSession: newGame })
       let game = activeGames.find(game => game.roomId === roomId)
       if (!game) {
         game = new GameSession(roomId, hostId, gameSession.players, gameSession.settings)
@@ -65,7 +68,6 @@ io.on('connection', (socket) => {
     });
 
     socket.on('endGame', async (roomId) => {
-      await Room.findByIdAndUpdate(roomId, { gameSession: null })
       const game = activeGames.find(game => game.roomId === roomId)
       if (game) {
         game.endGame()
@@ -146,11 +148,10 @@ class GameSession {
         this.players = players
         this.turnPlayerIndex = 0;
         this.turnNumber = 1
-        this.turnDuration = (turnDuration || 60) * 1000 
-        this.turnsUntilSkip = (turnsUntilSkip || 3)
-        this.bankSize = (bankSize || 7)
+        this.turnDuration = turnDuration * 1000 
+        this.turnsUntilSkip = turnsUntilSkip
+        this.bankSize = bankSize
         this.cooldown = 3 * 1000 // time between turns
-        this.inactivePlayerIds = []
         this.passedTurns = 0
         this.isOnCooldown = true
         this.letterBag = this.createLetterBag(letterBag)
@@ -375,7 +376,7 @@ class GameSession {
       this.endTurn(true)
     }
 
-    async endTurn(isPassed) {
+    endTurn(isPassed) {
       // Clear the timeout
       clearTimeout(this.turnTimeout);
       // reset inactivity counters
@@ -384,7 +385,6 @@ class GameSession {
       // if turn was passed without replacing any letters
       if (isPassed) { this.passedTurns += 1 } else { this.passedTurns = 0}
       if (this.passedTurns === this.players.length) { // no player can make any more words
-        await Room.findByIdAndUpdate(this.roomId, { gameSession: null })
         this.endGame()
         this.sendMessage(`No player is able to create more words. the winner is ${this.players[0].name} 🏆`, `Game Over`)
         return
@@ -395,7 +395,7 @@ class GameSession {
       setTimeout(() => {this.nextTurn()}, this.cooldown);
     }
 
-    async handleTurnTimeout() {
+    handleTurnTimeout() {
         if (!this.isActive) return;  // Skip if game is inactive
         const turnPlayer = this.players[this.turnPlayerIndex]
         io.to(turnPlayer._id).emit('turnTimedOut', turnPlayer.letterBank, JSON.parse(JSON.stringify(this.board)));
@@ -405,14 +405,13 @@ class GameSession {
         if (typeof turnPlayer.inactiveTurns !== 'number') turnPlayer.inactiveTurns = 0;
         turnPlayer.inactiveTurns += 1
         if (turnPlayer.inactiveTurns === this.turnsUntilSkip) {
-          this.inactivePlayerIds.push(turnPlayer._id)
-          io.to(this.hostId).emit('playerCanBeSkipped', this.inactivePlayerIds); // update the host
+          turnPlayer.inactive = true
+          io.to(this.hostId).emit('playerCanBeSkipped', this.players); // update the host
           this.sendMessage(`${turnPlayer.name} missed ${this.turnsUntilSkip} turns in a row and may be skipped ⚠️`)
         }
 
         // end the game if x rounds passed with no moves made by any player
         if (this.players.every(player => player.inactiveTurns >= this.turnsUntilSkip)) {
-          await Room.findByIdAndUpdate(this.roomId, { gameSession: null })
           this.endGame()
           this.sendMessage(`The game ended due to inactivity of all players 😴`, `Game Over`)
           return
@@ -432,10 +431,11 @@ class GameSession {
         this.startTurn();
     }
 
-    endGame() {
+    async endGame() {
       this.isActive = false;
       clearTimeout(this.turnTimeout); // Stop the current turn timer
       activeGames.splice(activeGames.indexOf(this), 1)
+      await Room.findByIdAndUpdate(roomId, { gameSession: null })
       io.to(this.roomId).emit('gameEnded');
     }
 
@@ -449,7 +449,6 @@ class GameSession {
         leftInBag: this.letterBag.length,
         letterBank: this.players.find(player => player._id === userId).letterBank,
         players: this.players, // because scores etc. are not saved in DB
-        inactivePlayerIds: [...this.inactivePlayerIds], // (only necessary for the host...)
       }
       return sessionData
     }
