@@ -11,6 +11,7 @@ const Game = require('../models/Game.model');
 //const { formatDistanceToNow } = require('date-fns');
 const natural = require('natural');
 const wordnet = new natural.WordNet(); // Load WordNet data
+const axios = require('axios');
 
 io.on('connection', (socket) => {
 
@@ -73,8 +74,8 @@ io.on('connection', (socket) => {
         game.endGame()
         game.sendMessage(`The host has ended the game ⛔`, `Game Over`)
       } else { // fallback in case game lost from server memory
-        RoomManager.endGame(this.roomId)
-        RoomManager.sendMessage(`The host has ended the game ⛔`, `Game Over`)
+        RoomManager.endGame(roomId)
+        RoomManager.sendMessage(roomId, `The host has ended the game ⛔`, `Game Over`)
       }
     });
 
@@ -318,6 +319,7 @@ class GameSession {
           `${turnPlayer.name} created ${words.length} ${wordStr} 💡\n${wordScoreList}\nTotal score: ${totalScore} points`,
           `Turn ${this.turnNumber}`
         );
+        this.generateText(words)
         this.endTurn()
       } else {
         // Some words are invalid
@@ -469,6 +471,41 @@ class GameSession {
         players: this.players, // because scores etc. are not saved in DB
       }
       return sessionData
+    }
+
+    async generateText(words) {
+        const turnPlayer = this.players[this.turnPlayerIndex]
+        const chosenWord = words.find(w => w.length > 2)
+        if (!chosenWord) return
+        const prompt = `${turnPlayer.name} was thinking about "${words[0].toLowerCase()}" because`
+        const API_URL = 'https://api-inference.huggingface.co/models/gpt2';
+        const API_KEY = process.env.HUGGING_FACE_API_KEY
+        try {
+          const response = await axios.post(API_URL, 
+            { 
+              inputs: prompt, 
+              parameters: { 
+                max_new_tokens: 50,
+                temperature: 0.7,
+                top_p: 0.9,
+                //frequency_penalty: 0.1,
+                //repetition_penalty: 1.03,
+              } },
+            { headers: { Authorization: `Bearer ${API_KEY}` } }
+          );
+          
+          let generatedText = response.data[0]?.generated_text || response.data[0]?.text || '';
+          // Split the response into sentences using a more reliable method
+          const sentences = generatedText.split(/(?<=[.!?])(?:\s+"|\s+|\s*)/); // Split by punctuation followed by a space
+          // if output is longer than 25 characters or the second sentence doesn't end in a dot, get only 1 sentence
+          const sentenceNum = generatedText.length > 25 || sentences[1][sentences[1].length-1] !== '.' ? 1 : 2
+          if (sentences.length > sentenceNum) {
+              generatedText = sentences.slice(0, sentenceNum).join(' ').trim(); // Limit to 2 sentences
+          }
+          this.sendMessage(generatedText)
+        } catch (error) {
+          console.error('Error generating text:', error.message);
+        }
     }
 }
 
