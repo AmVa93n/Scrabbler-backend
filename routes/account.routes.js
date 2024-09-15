@@ -90,10 +90,10 @@ router.get("/rooms", isAuthenticated, async (req, res, next) => {
 router.post("/room", isAuthenticated, async (req, res, next) => {
   try {
     const creator = req.payload._id;
-    const { name } = req.body;
+    const { name, description } = req.body;
     
-    await Room.create({ creator, name, gameSession: null, kickedUsers: []})
-    res.status(200).send()
+    const createdRoom = await Room.create({ creator, name, description, gameSession: null, kickedUsers: []})
+    res.status(200).json({ room: createdRoom });
   } catch (err) {
     next(err);  // Pass the error to the error-handling middleware
   }
@@ -125,9 +125,9 @@ router.get("/room/:roomId", isAuthenticated, async (req, res, next) => {
 router.put("/room/:roomId", isAuthenticated, async (req, res, next) => {
   try {
     const roomId = req.params.roomId;
-    const { name, gameSession, kickedUsers } = req.body;
+    const { name, description, gameSession, kickedUsers } = req.body;
 
-    const updatedRoom = await Room.findByIdAndUpdate(roomId, { name, gameSession, kickedUsers }, { new: true })
+    const updatedRoom = await Room.findByIdAndUpdate(roomId, { name, description, gameSession, kickedUsers }, { new: true })
     .populate('gameSession.players')
     .populate({
       path: 'messages',

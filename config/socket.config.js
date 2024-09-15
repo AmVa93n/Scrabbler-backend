@@ -118,6 +118,25 @@ io.on('connection', (socket) => {
 
     });
 
+    socket.on('reaction', async (roomId, messageId, userId, reactionType) => {
+      try {
+        const message = await Message.findById(messageId);
+        // Check if the user has already reacted with the same reaction
+        const existingReaction = message.reactions.find(
+          (reaction) => reaction.user.toString() === userId && reaction.type === reactionType
+        );
+        if (!existingReaction) {
+          // Add the new reaction
+          message.reactions.push({ user: userId, type: reactionType });
+          await message.save();
+          io.to(roomId).emit('reactionsUpdated', messageId, message.reactions);
+        }
+      } catch (err) {
+        console.error(err);
+      }
+
+    });
+
     socket.on('disconnect', () => {
         if (!socket.user) return
         if (socket.roomId) io.to(socket.roomId).emit('userLeft', socket.user);
@@ -169,11 +188,12 @@ class GameSession {
         this.isActive = true;
     }
 
-    async sendMessage(text, title) {
+    async sendMessage(text, title, genData) {
       const room = await Room.findById(this.roomId)
 
       try {
-        const message = await Message.create({ title, text, minor: !title });
+        const message = await Message.create({ title, text, minor: !title, 
+                                                generated: genData?.generated, associatedWith: genData?.associatedWith});
         room.messages.push(message._id);
         await room.save();
         await message.populate('sender', 'name profilePic');
@@ -460,6 +480,7 @@ class GameSession {
     }
 
     getRefreshData(userId) {
+      const player = this.players.find(player => player._id === userId)
       // this info is not saved in the DB and needs to be resent to user if they refresh the page
       const sessionData = {
         turnPlayer: this.isOnCooldown ? null : this.players[this.turnPlayerIndex],
@@ -467,7 +488,7 @@ class GameSession {
         turnNumber: this.isOnCooldown ? null : this.turnNumber,
         board: JSON.parse(JSON.stringify(this.board)),
         leftInBag: this.letterBag.length,
-        letterBank: this.players.find(player => player._id === userId).letterBank,
+        letterBank: player?.letterBank,
         players: this.players, // because scores etc. are not saved in DB
       }
       return sessionData
@@ -502,7 +523,7 @@ class GameSession {
           if (sentences.length > sentenceNum) {
               generatedText = sentences.slice(0, sentenceNum).join(' ').trim(); // Limit to 2 sentences
           }
-          this.sendMessage(generatedText)
+          this.sendMessage(generatedText, null, {generated: true, associatedWith: turnPlayer._id})
         } catch (error) {
           console.error('Error generating text:', error.message);
         }

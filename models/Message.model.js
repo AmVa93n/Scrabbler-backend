@@ -11,6 +11,12 @@ const messageSchema = new mongoose.Schema({
   },
   title: { type: String },
   minor: { type: Boolean },
+  generated: { type: Boolean },
+  associatedWith: { type: Schema.Types.ObjectId, ref: 'User' },
+  reactions: [{
+    user: { type: Schema.Types.ObjectId, ref: 'User' },
+    type: { type: String },
+  }]
 });
 
 const Message = mongoose.model('Message', messageSchema);
