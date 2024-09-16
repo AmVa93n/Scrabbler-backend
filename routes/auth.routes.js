@@ -141,7 +141,7 @@ router.post('/google', async (req, res) => {
     const googleId = payload.sub;
 
     // Check if a user with the same email already exists
-    let user = await User.findOne({ email: payload.email })
+    let user = await User.findOne({ email: payload.email, googleId: null })
     if (user) {
       res.status(400).json({ message: "You've already signed up with your Google email address. Please log in with email and password" });
       return;

@@ -87,9 +87,9 @@ io.on('connection', (socket) => {
       }
     });
 
-    socket.on('validateMove', async (roomId, newlyPlacedLetters, updatedBoard, wordsWithScores) => {
+    socket.on('validateMove', async (roomId, newlyPlacedLetters, updatedBoard, wordsWithScores, promptData) => {
         const game = activeGames.find(game => game.roomId === roomId)
-        if (game) game.validateMove(newlyPlacedLetters, updatedBoard, wordsWithScores);
+        if (game) game.validateMove(newlyPlacedLetters, updatedBoard, wordsWithScores, promptData);
     });
 
     socket.on('replaceLetters', async (roomId, lettersToReplace) => {
@@ -308,7 +308,7 @@ class GameSession {
         }, this.turnDuration);
     }
 
-    async validateMove(newlyPlacedLetters, updatedBoard, wordsWithScores) {
+    async validateMove(newlyPlacedLetters, updatedBoard, wordsWithScores, promptData) {
       const words = wordsWithScores.map(w => w.word)
       
       // Convert wordnet.lookup to return a promise
@@ -339,7 +339,7 @@ class GameSession {
           `${turnPlayer.name} created ${words.length} ${wordStr} 💡\n${wordScoreList}\nTotal score: ${totalScore} points`,
           `Turn ${this.turnNumber}`
         );
-        this.generateText(words)
+        this.generateText(promptData)
         this.endTurn()
       } else {
         // Some words are invalid
@@ -494,17 +494,15 @@ class GameSession {
       return sessionData
     }
 
-    async generateText(words) {
+    async generateText(promptData) {
+        if (!promptData) return
         const turnPlayer = this.players[this.turnPlayerIndex]
-        const chosenWord = words.find(w => w.length > 2)
-        if (!chosenWord) return
-        const prompt = `${turnPlayer.name} was thinking about "${words[0].toLowerCase()}" because`
         const API_URL = 'https://api-inference.huggingface.co/models/gpt2';
         const API_KEY = process.env.HUGGING_FACE_API_KEY
         try {
           const response = await axios.post(API_URL, 
             { 
-              inputs: prompt, 
+              inputs: promptData.promptText, 
               parameters: { 
                 max_new_tokens: 50,
                 temperature: 0.7,
