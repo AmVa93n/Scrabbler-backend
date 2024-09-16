@@ -1,14 +1,10 @@
 const express = require("express");
 const router = express.Router();
-
-// ℹ️ Handles password encryption
 const bcrypt = require("bcrypt");
-
-// ℹ️ Handles password encryption
 const jwt = require("jsonwebtoken");
-
-// ℹ️ Handles files upload
 const fileUploader = require("../config/cloudinary.config.js");
+const { OAuth2Client } = require('google-auth-library');
+const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 // Require the User model in order to interact with the database
 const User = require("../models/User.model");
@@ -129,6 +125,49 @@ router.get("/verify", isAuthenticated, (req, res, next) => {
 
   // Send back the token payload object containing the user data
   res.status(200).json(req.payload);
+});
+
+router.post('/google', async (req, res) => {
+  const { idToken } = req.body;
+
+  try {
+    // Verify the token
+    const ticket = await client.verifyIdToken({
+      idToken,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+
+    const payload = ticket.getPayload();
+    const googleId = payload.sub;
+
+    // Check if a user with the same email already exists
+    let user = await User.findOne({ email: payload.email })
+    if (user) {
+      res.status(400).json({ message: "You've already signed up with your Google email address. Please log in with email and password" });
+      return;
+    }
+
+    // Check if a user already signed up with google
+    user = await User.findOne({ googleId });
+    if (!user) {
+      user = await User.create({ googleId, email: payload.email, name: payload.name, profilePic: payload.picture });
+    }
+
+    // Create a JSON Web Token and sign it
+    const { _id, email, name, profilePic } = user
+    const tokenPayload = { _id, email, name, profilePic };
+    const authToken = jwt.sign(tokenPayload, process.env.TOKEN_SECRET, {
+      algorithm: "HS256",
+      expiresIn: "6h",
+    });
+
+    // Send the token as the response
+    res.status(200).json({ authToken: authToken });
+
+  } catch (error) {
+    console.error(error);
+    res.status(401).json({ error: 'Unable to authenticate the user' });
+  }
 });
 
 module.exports = router;

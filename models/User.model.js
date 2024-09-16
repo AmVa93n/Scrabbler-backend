@@ -1,6 +1,5 @@
 const { Schema, model } = require("mongoose");
 
-// TODO: Please make sure you edit the User model to whatever makes sense in this case
 const userSchema = new Schema(
   {
     email: {
@@ -12,7 +11,6 @@ const userSchema = new Schema(
     },
     password: {
       type: String,
-      required: [true, "Password is required."],
     },
     name: {
       type: String,
@@ -28,6 +26,9 @@ const userSchema = new Schema(
       type: String,
     },
     profilePic: {
+      type: String,
+    },
+    googleId: {
       type: String,
     },
   },
