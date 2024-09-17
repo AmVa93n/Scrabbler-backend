@@ -73,6 +73,8 @@ router.delete("/profile", isAuthenticated, async (req, res, next) => {
       }
 });
 
+// room routes
+
 router.get("/rooms", isAuthenticated, async (req, res, next) => {
   try {
     const roomsData = await Room.find({creator: req.payload._id});
@@ -161,9 +163,11 @@ router.delete("/room/:roomId", isAuthenticated, async (req, res, next) => {
   }
 });
 
+// board routes
+
 router.get("/boards", isAuthenticated, async (req, res, next) => {
   try {
-    const boardsData = await Board.find({creator: req.payload._id});
+    const boardsData = await Board.find({$or: [{creator: req.payload._id}, {default: true}]});
     
     if (!boardsData) {
       return res.status(404).json({ message: "Boards not found" });
@@ -175,9 +179,54 @@ router.get("/boards", isAuthenticated, async (req, res, next) => {
   }
 });
 
+router.post("/board", isAuthenticated, async (req, res, next) => {
+  try {
+    const creator = req.payload._id;
+    const { name, size, bonusTiles } = req.body;
+    
+    const createdBoard = await Board.create({ creator, name, size, bonusTiles})
+    res.status(200).json({ board: createdBoard });
+  } catch (err) {
+    next(err);  // Pass the error to the error-handling middleware
+  }
+});
+
+router.put("/board/:boardId", isAuthenticated, async (req, res, next) => {
+  try {
+    const boardId = req.params.boardId;
+    const { name, size, bonusTiles } = req.body;
+
+    const updatedBoard = await Board.findByIdAndUpdate(boardId, { name, size, bonusTiles }, { new: true })
+
+    if (!updatedBoard) {
+      return res.status(404).json({ message: "Board not found" });
+    }
+
+    res.status(200).json({ board: updatedBoard });
+  } catch (err) {
+    next(err);  // Pass the error to the error-handling middleware
+  }
+});
+
+router.delete("/board/:boardId", isAuthenticated, async (req, res, next) => {
+  try {
+    const boardId = req.params.boardId;
+    const deletedBoard = await Board.findByIdAndDelete(boardId);
+    if (!deletedBoard) {
+      return res.status(404).json({ message: "Board not found" });
+    }
+    res.status(200).send()
+
+  } catch (err) {
+    next(err);  // Pass the error to the error-handling middleware
+  }
+});
+
+// letter bag routes
+
 router.get("/letterbags", isAuthenticated, async (req, res, next) => {
   try {
-    const letterBagsData = await LetterBag.find({creator: req.payload._id});
+    const letterBagsData = await LetterBag.find({$or: [{creator: req.payload._id}, {default: true}]});
     
     if (!letterBagsData) {
       return res.status(404).json({ message: "Letter Bags not found" });
@@ -188,6 +237,51 @@ router.get("/letterbags", isAuthenticated, async (req, res, next) => {
     next(err);
   }
 });
+
+router.post("/letterbag", isAuthenticated, async (req, res, next) => {
+  try {
+    const creator = req.payload._id;
+    const { name, letterData } = req.body;
+    
+    const createdLetterBag = await LetterBag.create({ creator, name, letterData})
+    res.status(200).json({ letterbag: createdLetterBag });
+  } catch (err) {
+    next(err);  // Pass the error to the error-handling middleware
+  }
+});
+
+router.put("/letterbag/:letterbagId", isAuthenticated, async (req, res, next) => {
+  try {
+    const letterbagId = req.params.letterbagId;
+    const { name, letterData } = req.body;
+
+    const updatedLetterBag = await LetterBag.findByIdAndUpdate(letterbagId, { name, letterData }, { new: true })
+
+    if (!updatedLetterBag) {
+      return res.status(404).json({ message: "Letter Bag not found" });
+    }
+
+    res.status(200).json({ letterbag: updatedLetterBag });
+  } catch (err) {
+    next(err);  // Pass the error to the error-handling middleware
+  }
+});
+
+router.delete("/letterbag/:letterbagId", isAuthenticated, async (req, res, next) => {
+  try {
+    const letterbagId = req.params.letterbagId;
+    const deletedLetterBag = await LetterBag.findByIdAndDelete(letterbagId);
+    if (!deletedLetterBag) {
+      return res.status(404).json({ message: "Letter Bag not found" });
+    }
+    res.status(200).send()
+
+  } catch (err) {
+    next(err);  // Pass the error to the error-handling middleware
+  }
+});
+
+// misc.
 
 router.get("/ping", isAuthenticated, async (req, res, next) => {
   res.status(200).send() // this is just to keep the server from spinning down

@@ -80,6 +80,7 @@ const boardSchema = new Schema(
         type: [{ x: Number, y: Number, bonusType: String }],
         default: defaultBonusTiles,
     },
+    default: { type: Boolean },
   },
   {
     // this second object adds extra properties: `createdAt` and `updatedAt`

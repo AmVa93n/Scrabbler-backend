@@ -38,6 +38,7 @@ const letterBagSchema = new Schema(
         type: [{ letter: String, count: Number, points: Number }],
         default: defaultLetterData, 
     },
+    default: { type: Boolean },
   },
   {
     // this second object adds extra properties: `createdAt` and `updatedAt`
