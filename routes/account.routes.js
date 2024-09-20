@@ -108,10 +108,19 @@ router.get("/room/:roomId", isAuthenticated, async (req, res, next) => {
       .populate('gameSession')
       .populate({
         path: 'messages',
-        populate: {
-          path: 'sender',
-          select: 'name profilePic',
-        }
+        populate: [
+          {
+            path: 'sender',
+            select: 'name profilePic',
+          },
+          {
+            path: 'reactions',  // Populate 'reactions' array
+            populate: {
+              path: 'user',      // Populate the 'user' field within each 'reaction'
+              select: 'name',    // Select only the 'name' field from the 'user'
+            }
+          }
+        ]
       });
       
     if (!roomData) {

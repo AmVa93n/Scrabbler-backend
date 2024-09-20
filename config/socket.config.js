@@ -63,7 +63,7 @@ io.on('connection', (socket) => {
       await Room.findByIdAndUpdate(roomId, { gameSession: newGame })
       let game = activeGames.find(game => game.roomId === roomId)
       if (!game) {
-        game = new GameSession(newGame._id, roomId, hostId, players, settings)
+        game = new GameSession(newGame._id.toString(), roomId, hostId, players, settings)
         game.startGame()
       }
     });
@@ -89,12 +89,12 @@ io.on('connection', (socket) => {
 
     socket.on('validateMove', async (roomId, newlyPlacedLetters, updatedBoard, wordsWithScores, promptData) => {
         const game = activeGames.find(game => game.roomId === roomId)
-        if (game) game.validateMove(newlyPlacedLetters, updatedBoard, wordsWithScores, promptData);
+        if (game) game.handleMove(newlyPlacedLetters, updatedBoard, wordsWithScores, promptData);
     });
 
-    socket.on('replaceLetters', async (roomId, lettersToReplace) => {
+    socket.on('swapLetters', async (roomId, lettersToSwap) => {
       const game = activeGames.find(game => game.roomId === roomId)
-      if (game) game.replaceLetters(lettersToReplace);
+      if (game) game.swapLetters(lettersToSwap);
     });
 
     socket.on('passTurn', async (roomId) => {
@@ -121,20 +121,19 @@ io.on('connection', (socket) => {
     socket.on('reaction', async (roomId, messageId, userId, reactionType) => {
       try {
         const message = await Message.findById(messageId);
-        // Check if the user has already reacted with the same reaction
-        const existingReaction = message.reactions.find(
-          (reaction) => reaction.user.toString() === userId && reaction.type === reactionType
-        );
-        if (!existingReaction) {
-          // Add the new reaction
-          message.reactions.push({ user: userId, type: reactionType });
-          await message.save();
-          io.to(roomId).emit('reactionsUpdated', messageId, message.reactions);
+        // Add the new reaction
+        message.reactions.push({ user: userId, type: reactionType });
+        await message.save();
+        await message.populate('reactions.user', 'name')
+        io.to(roomId).emit('reactionsUpdated', messageId, message.reactions);
+        // update reaction score if reaction type matches the target reaction
+        if (reactionType === message.targetReaction) {
+          const game = activeGames.find(game => game.roomId === roomId && game.gameId === message.generatedFor.toString())
+          if (game) game.updateReactionScore(message.generatedBy.toString());
         }
       } catch (err) {
         console.error(err);
       }
-
     });
 
     socket.on('disconnect', () => {
@@ -190,10 +189,10 @@ class GameSession {
 
     async sendMessage(text, title, genData) {
       const room = await Room.findById(this.roomId)
+      const { generated, generatedBy, generatedFor, targetReaction} = genData || {}
 
       try {
-        const message = await Message.create({ title, text, minor: !title, 
-                                                generated: genData?.generated, associatedWith: genData?.associatedWith});
+        const message = await Message.create({ title, text, minor: !title, generated, generatedBy, generatedFor, targetReaction});
         room.messages.push(message._id);
         await room.save();
         await message.populate('sender', 'name profilePic');
@@ -308,9 +307,27 @@ class GameSession {
         }, this.turnDuration);
     }
 
-    async validateMove(newlyPlacedLetters, updatedBoard, wordsWithScores, promptData) {
+    handleMove(newlyPlacedLetters, updatedBoard, wordsWithScores, promptData) {
       const words = wordsWithScores.map(w => w.word)
-      
+      const turnPlayer = this.players[this.turnPlayerIndex]
+
+      if (this.isMoveValid(words)) { // All words are valid
+        const wordStr = words.length === 1 ? 'word' : 'words'
+        const wordScoreList = wordsWithScores.map(w => `${w.word} (${w.score} points)`).join('\n');
+        const totalScore = wordsWithScores.reduce((sum, w) => sum + w.score, 0);
+        this.updateGame(newlyPlacedLetters, updatedBoard, totalScore)
+        this.sendMessage(
+          `${turnPlayer.name} created ${words.length} ${wordStr} 💡\n${wordScoreList}\nTotal score: ${totalScore} points`,
+          `Turn ${this.turnNumber}`
+        );
+        this.generateText(promptData)
+        this.endTurn()
+      } else { // Some words are invalid
+        io.to(turnPlayer._id).emit('moveRejected');
+      }
+    }
+
+    async isMoveValid(words) {
       // Convert wordnet.lookup to return a promise
       function isWordValid(word) {
         return new Promise((resolve) => {
@@ -325,26 +342,8 @@ class GameSession {
           words.map(word => isWordValid(word))
       );
 
-      // Check if all words are valid
-      const allWordsValid = validationResults.every(result => result);
-      const turnPlayer = this.players[this.turnPlayerIndex]
-
-      if (allWordsValid) {
-        // All words are valid
-        const wordStr = words.length === 1 ? 'word' : 'words'
-        const wordScoreList = wordsWithScores.map(w => `${w.word} (${w.score} points)`).join('\n');
-        const totalScore = wordsWithScores.reduce((sum, w) => sum + w.score, 0);
-        this.updateGame(newlyPlacedLetters, updatedBoard, totalScore)
-        this.sendMessage(
-          `${turnPlayer.name} created ${words.length} ${wordStr} 💡\n${wordScoreList}\nTotal score: ${totalScore} points`,
-          `Turn ${this.turnNumber}`
-        );
-        this.generateText(promptData)
-        this.endTurn()
-      } else {
-        // Some words are invalid
-        io.to(turnPlayer._id).emit('moveRejected');
-      }
+      // return true if all words are valid
+      return validationResults.every(result => result);
     }
 
     updateGame(newlyPlacedLetters, updatedBoard, turnScore) {
@@ -382,21 +381,21 @@ class GameSession {
       io.to(turnPlayer._id).emit('letterBankUpdated', turnPlayer.letterBank);
     }
 
-    replaceLetters(replacedLetterIds) {
+    swapLetters(SwappedLetterIds) {
       // remove letters from player's bank
       const turnPlayer = this.players[this.turnPlayerIndex]
-      const lettersToReplace = []
-      for (let id of replacedLetterIds) {
+      const lettersToSwap = []
+      for (let id of SwappedLetterIds) {
         const letterToRemove = turnPlayer.letterBank.find(letter => letter.id === id)
         const letterIndex = turnPlayer.letterBank.indexOf(letterToRemove)
         turnPlayer.letterBank.splice(letterIndex, 1)
-        lettersToReplace.push(letterToRemove)
+        lettersToSwap.push(letterToRemove)
       }
       // add letters back to the bottom of the bag and distribute new letters
-      this.letterBag.unshift(...lettersToReplace)
-      this.distributeLetters(turnPlayer, lettersToReplace.length)
+      this.letterBag.unshift(...lettersToSwap)
+      this.distributeLetters(turnPlayer, lettersToSwap.length)
       io.to(turnPlayer._id).emit('turnPassed', turnPlayer.letterBank, JSON.parse(JSON.stringify(this.board)));
-      this.sendMessage(`${turnPlayer.name} passed and replaced ${lettersToReplace.length} letters 🔄`, `Turn ${this.turnNumber}`)
+      this.sendMessage(`${turnPlayer.name} passed and swapped ${lettersToSwap.length} letters 🔄`, `Turn ${this.turnNumber}`)
       this.endTurn()
     }
 
@@ -417,7 +416,8 @@ class GameSession {
       if (isPassed) { this.passedTurns += 1 } else { this.passedTurns = 0}
       if (this.passedTurns === this.players.length) { // no player can make any more words
         this.endGame()
-        this.sendMessage(`No player is able to create more words. the winner is ${this.players[0].name} 🏆`, `Game Over`)
+        this.players.sort((a,b)=> b.score - a.score)
+        this.sendMessage(`No player is able to create more words. the winner is ${this.players[0]} 🏆`, `Game Over`)
         return
       }
       // Advance to the next player's turn after cooldown
@@ -475,7 +475,7 @@ class GameSession {
         passedTurns: this.passedTurns,
         isOnCooldown: this.isOnCooldown,
       }
-      await Game.findOneAndUpdate(this.gameId,{ state })
+      await Game.findByIdAndUpdate(this.gameId,{ state, players: this.players })
       RoomManager.endGame(this.roomId)
     }
 
@@ -521,10 +521,18 @@ class GameSession {
           if (sentences.length > sentenceNum) {
               generatedText = sentences.slice(0, sentenceNum).join(' ').trim(); // Limit to 2 sentences
           }
-          this.sendMessage(generatedText, null, {generated: true, associatedWith: turnPlayer._id})
+          this.sendMessage(generatedText, null, 
+            {generated: true, generatedBy: turnPlayer._id, generatedFor: this.gameId, targetReaction: promptData.targetReaction})
         } catch (error) {
           console.error('Error generating text:', error.message);
         }
+    }
+
+    updateReactionScore(playerId) {
+      const player = this.players.find(player => player._id === playerId)
+      if (!player.reactionScore) player.reactionScore = 0
+      player.reactionScore += 1
+      io.to(playerId).emit('reactionScoreUpdated', player.reactionScore);
     }
 }
 

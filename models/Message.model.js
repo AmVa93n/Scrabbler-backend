@@ -12,7 +12,9 @@ const messageSchema = new mongoose.Schema({
   title: { type: String },
   minor: { type: Boolean },
   generated: { type: Boolean },
-  associatedWith: { type: Schema.Types.ObjectId, ref: 'User' },
+  generatedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+  generatedFor: { type: Schema.Types.ObjectId, ref: 'Game' },
+  targetReaction: { type: String },
   reactions: [{
     user: { type: Schema.Types.ObjectId, ref: 'User' },
     type: { type: String },
