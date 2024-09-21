@@ -9,9 +9,14 @@ const Message = require('../models/Message.model');
 const Room = require('../models/Room.model'); 
 const Game = require('../models/Game.model'); 
 //const { formatDistanceToNow } = require('date-fns');
-const natural = require('natural');
-const wordnet = new natural.WordNet(); // Load WordNet data
+//const natural = require('natural');
+//const wordnet = new natural.WordNet(); // Load WordNet data
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
+const filePath = path.join(__dirname, 'sowpods.txt');
+const data = fs.readFileSync(filePath, 'utf-8'); // Read the text file content
+const dictionary = data.split('\n').map(line => line.trim()).filter(line => line.length > 0);
 
 io.on('connection', (socket) => {
 
@@ -323,27 +328,13 @@ class GameSession {
         this.generateText(promptData)
         this.endTurn()
       } else { // Some words are invalid
-        io.to(turnPlayer._id).emit('moveRejected');
+        const invalidWords = words.filter(word => !dictionary.includes(word))
+        io.to(turnPlayer._id).emit('moveRejected', invalidWords);
       }
     }
 
-    async isMoveValid(words) {
-      // Convert wordnet.lookup to return a promise
-      function isWordValid(word) {
-        return new Promise((resolve) => {
-            wordnet.lookup(word.toLowerCase(), (results) => {
-                resolve(results.length > 0); // Resolve true if the word is valid, false otherwise
-            });
-        });
-      };
-
-      // Await the results of all word checks
-      const validationResults = await Promise.all(
-          words.map(word => isWordValid(word))
-      );
-
-      // return true if all words are valid
-      return validationResults.every(result => result);
+    isMoveValid(words) {
+      return words.every(word => dictionary.includes(word))
     }
 
     updateGame(newlyPlacedLetters, updatedBoard, turnScore) {
@@ -417,7 +408,7 @@ class GameSession {
       if (this.passedTurns === this.players.length) { // no player can make any more words
         this.endGame()
         this.players.sort((a,b)=> b.score - a.score)
-        this.sendMessage(`No player is able to create more words. the winner is ${this.players[0]} 🏆`, `Game Over`)
+        this.sendMessage(`No player is able to create more words. the winner is ${this.players[0].name} 🏆`, `Game Over`)
         return
       }
       // Advance to the next player's turn after cooldown

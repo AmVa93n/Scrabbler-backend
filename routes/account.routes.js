@@ -200,12 +200,11 @@ router.post("/board", isAuthenticated, async (req, res, next) => {
   }
 });
 
-router.put("/board/:boardId", isAuthenticated, async (req, res, next) => {
+router.put("/board", isAuthenticated, async (req, res, next) => {
   try {
-    const boardId = req.params.boardId;
-    const { name, size, bonusTiles } = req.body;
+    const { _id, name, size, bonusTiles } = req.body;
 
-    const updatedBoard = await Board.findByIdAndUpdate(boardId, { name, size, bonusTiles }, { new: true })
+    const updatedBoard = await Board.findByIdAndUpdate(_id, { name, size, bonusTiles }, { new: true })
 
     if (!updatedBoard) {
       return res.status(404).json({ message: "Board not found" });
@@ -259,12 +258,11 @@ router.post("/letterbag", isAuthenticated, async (req, res, next) => {
   }
 });
 
-router.put("/letterbag/:letterbagId", isAuthenticated, async (req, res, next) => {
+router.put("/letterbag", isAuthenticated, async (req, res, next) => {
   try {
-    const letterbagId = req.params.letterbagId;
-    const { name, letterData } = req.body;
+    const { _id, name, letterData } = req.body;
 
-    const updatedLetterBag = await LetterBag.findByIdAndUpdate(letterbagId, { name, letterData }, { new: true })
+    const updatedLetterBag = await LetterBag.findByIdAndUpdate(_id, { name, letterData }, { new: true })
 
     if (!updatedLetterBag) {
       return res.status(404).json({ message: "Letter Bag not found" });
