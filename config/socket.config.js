@@ -84,14 +84,6 @@ io.on('connection', (socket) => {
       }
     });
 
-    socket.on('skipPlayer', (roomId, userId) => {
-      const game = activeGames.find(game => game.roomId === roomId)
-      if (game) {
-        const player = game.players.find(player => player._id === userId)
-        if (player) player.skipped = true
-      }
-    });
-
     socket.on('validateMove', async (roomId, newlyPlacedLetters, updatedBoard, wordsWithScores, promptData) => {
         const game = activeGames.find(game => game.roomId === roomId)
         if (game) game.handleMove(newlyPlacedLetters, updatedBoard, wordsWithScores, promptData);
@@ -105,6 +97,14 @@ io.on('connection', (socket) => {
     socket.on('passTurn', async (roomId) => {
       const game = activeGames.find(game => game.roomId === roomId)
       if (game) game.passTurn();
+    });
+
+    socket.on('playerIsBack', async (roomId, playerId) => {
+      const game = activeGames.find(game => game.roomId === roomId)
+      if (game) {
+        const player = game.players.find(player => player._id === playerId)
+        player.inactiveTurns = 0;
+      }
     });
 
     socket.on('message', async (roomId, messageData) => {
@@ -174,7 +174,7 @@ const activeGames = []
 
 class GameSession {
     constructor(gameId, roomId, hostId, players, settings) {
-        const { board, letterBag, turnDuration, turnsUntilSkip, bankSize } = settings
+        const { board, letterBag, turnDuration, turnsUntilSkip, bankSize, gameEnd } = settings
         this.gameId = gameId
         this.roomId = roomId
         this.hostId = hostId
@@ -184,10 +184,11 @@ class GameSession {
         this.turnDuration = turnDuration * 1000 
         this.turnsUntilSkip = turnsUntilSkip
         this.bankSize = bankSize
+        this.gameEnd = gameEnd
         this.cooldown = 3 * 1000 // time between turns
         this.passedTurns = 0
         this.isOnCooldown = true
-        this.letterBag = this.createLetterBag(letterBag)
+        this.tileBag = this.createTileBag(letterBag)
         this.board = this.createBoard(board)
         this.isActive = true;
     }
@@ -207,7 +208,7 @@ class GameSession {
       }
     }
 
-    createLetterBag(letterBagData) {
+    createTileBag(letterBagData) {
       const letterBag = []
       let id = 1
       for (let { letter, count, points } of letterBagData.letterData) {
@@ -254,10 +255,13 @@ class GameSession {
 
       for (let player of this.players) {
         this.distributeLetters(player, this.bankSize)
+        player.score = 0
+        player.inactiveTurns = 0
+        player.reactionScore = 0
       }
       const sessionData = {
         board: JSON.parse(JSON.stringify(this.board)),
-        leftInBag: this.letterBag.length,
+        leftInBag: this.tileBag.length,
         players: this.players,
       }
       io.to(this.roomId).emit('gameStarted');
@@ -272,10 +276,10 @@ class GameSession {
     distributeLetters(player, amount) {
       if (!player.letterBank) player.letterBank = []
       for (let i=0; i < amount; i++) {
-        if (this.letterBag.length === 0) {
+        if (this.tileBag.length === 0) {
           break; // Exit if no letters are left in the bag
         }
-        player.letterBank.push(this.letterBag.pop())
+        player.letterBank.push(this.tileBag.pop())
       }
     }
 
@@ -283,13 +287,13 @@ class GameSession {
         if (!this.isActive) return;  // Prevent turn logic if game is inactive
         this.isOnCooldown = false // officially enter turn
         const turnPlayer = this.players[this.turnPlayerIndex];
-        if (turnPlayer.skipped) { // skip the turn if host marked player as inactive
-          this.sendMessage(`${turnPlayer.name} was skipped due to inactivity ❌`, `Turn ${this.turnNumber}`)
+        if (turnPlayer.inactiveTurns >= this.turnsUntilSkip) { // skip the turn if player as inactive
+          this.sendMessage(`${turnPlayer.name}'s turn was skipped due to inactivity ❌`, `Turn ${this.turnNumber}`)
           this.nextTurn()
           return
         }
-        if (turnPlayer.letterBank.length === 0) { // skip the turn if player is out of letters
-          this.sendMessage(`${turnPlayer.name} was skipped because they ran out of letters ❌`, `Turn ${this.turnNumber}`)
+        if (turnPlayer.letterBank.length === 0) { // skip the turn if player is out of tiles
+          this.sendMessage(`${turnPlayer.name}'s turn was skipped because they ran out of tiles ❌`, `Turn ${this.turnNumber}`)
           this.nextTurn()
           return
         }
@@ -360,12 +364,11 @@ class GameSession {
       }
       this.board = updatedBoard
       // update player score
-      if (typeof turnPlayer.score !== 'number') turnPlayer.score = 0;
       turnPlayer.score += turnScore
       // update data for players on client side
       const sessionData = {
         board: JSON.parse(JSON.stringify(updatedBoard)),
-        leftInBag: this.letterBag.length,
+        leftInBag: this.tileBag.length,
         players: this.players
       }
       io.to(this.roomId).emit('gameUpdated', sessionData);
@@ -383,7 +386,7 @@ class GameSession {
         lettersToSwap.push(letterToRemove)
       }
       // add letters back to the bottom of the bag and distribute new letters
-      this.letterBag.unshift(...lettersToSwap)
+      this.tileBag.unshift(...lettersToSwap)
       this.distributeLetters(turnPlayer, lettersToSwap.length)
       io.to(turnPlayer._id).emit('turnPassed', turnPlayer.letterBank, JSON.parse(JSON.stringify(this.board)));
       this.sendMessage(`${turnPlayer.name} passed and swapped ${lettersToSwap.length} letters 🔄`, `Turn ${this.turnNumber}`)
@@ -419,17 +422,14 @@ class GameSession {
 
     handleTurnTimeout() {
         if (!this.isActive) return;  // Skip if game is inactive
+
         const turnPlayer = this.players[this.turnPlayerIndex]
-        io.to(turnPlayer._id).emit('turnTimedOut', turnPlayer.letterBank, JSON.parse(JSON.stringify(this.board)));
-        this.sendMessage(`${turnPlayer.name}'s turn has timed out! ⌛`, `Turn ${this.turnNumber}`)
-        
-        // increase inactivity counter
-        if (typeof turnPlayer.inactiveTurns !== 'number') turnPlayer.inactiveTurns = 0;
         turnPlayer.inactiveTurns += 1
-        if (turnPlayer.inactiveTurns === this.turnsUntilSkip) {
-          turnPlayer.inactive = true
-          io.to(this.hostId).emit('playerCanBeSkipped', this.players); // update the host
-          this.sendMessage(`${turnPlayer.name} missed ${this.turnsUntilSkip} turns in a row and may be skipped ⚠️`)
+        const hasBecomeInactive = turnPlayer.inactiveTurns === this.turnsUntilSkip
+        io.to(turnPlayer._id).emit('turnTimedOut', hasBecomeInactive);
+        this.sendMessage(`${turnPlayer.name}'s turn has timed out! ⌛`, `Turn ${this.turnNumber}`)
+        if (hasBecomeInactive) {
+          this.sendMessage(`${turnPlayer.name} missed ${this.turnsUntilSkip} turns in a row and will be skipped from now on ⚠️`)
         }
 
         // end the game if x rounds passed with no moves made by any player
@@ -462,7 +462,7 @@ class GameSession {
         turnEndTime: this.turnEndTime,
         turnNumber: this.turnNumber,
         board: this.board,
-        leftInBag: this.letterBag.length,
+        leftInBag: this.tileBag.length,
         passedTurns: this.passedTurns,
         isOnCooldown: this.isOnCooldown,
       }
@@ -478,8 +478,9 @@ class GameSession {
         turnEndTime: this.isOnCooldown ? null : this.turnEndTime.toISOString(),
         turnNumber: this.isOnCooldown ? null : this.turnNumber,
         board: JSON.parse(JSON.stringify(this.board)),
-        leftInBag: this.letterBag.length,
+        leftInBag: this.tileBag.length,
         letterBank: player?.letterBank,
+        reactionScore: player?.reactionScore,
         players: this.players, // because scores etc. are not saved in DB
       }
       return sessionData
@@ -521,7 +522,6 @@ class GameSession {
 
     updateReactionScore(playerId) {
       const player = this.players.find(player => player._id === playerId)
-      if (!player.reactionScore) player.reactionScore = 0
       player.reactionScore += 1
       io.to(playerId).emit('reactionScoreUpdated', player.reactionScore);
     }

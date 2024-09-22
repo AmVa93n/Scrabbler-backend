@@ -15,16 +15,16 @@ const gameSchema = new Schema(
             isBlank: { type: Boolean },
         }],
         score: Number,
-        inactiveTurns: String,
-        inactive: Boolean,
-        skipped: Boolean,
+        inactiveTurns: Number,
+        reactionScore: Number,
     }],
     settings: {
         board: { type: Schema.Types.ObjectId, ref: 'Board'},
         letterBag: { type: Schema.Types.ObjectId, ref: 'LetterBag'},
         turnDuration: { type: Number },
         turnsUntilSkip: { type: Number },
-        bankSize: { type: Number }
+        bankSize: { type: Number },
+        gameEnd: { type: String },
     },
     state: {
         turnPlayerIndex: { type: Number },

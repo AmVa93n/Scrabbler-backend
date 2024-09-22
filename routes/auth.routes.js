@@ -104,7 +104,7 @@ router.post("/login", async (req, res, next) => {
       // Create a JSON Web Token and sign it
       const authToken = jwt.sign(payload, process.env.TOKEN_SECRET, {
         algorithm: "HS256",
-        expiresIn: "6h",
+        expiresIn: "7d",
       });
 
       // Send the token as the response
@@ -158,7 +158,7 @@ router.post('/google', async (req, res) => {
     const tokenPayload = { _id, email, name, profilePic };
     const authToken = jwt.sign(tokenPayload, process.env.TOKEN_SECRET, {
       algorithm: "HS256",
-      expiresIn: "6h",
+      expiresIn: "7d",
     });
 
     // Send the token as the response
