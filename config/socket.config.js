@@ -174,7 +174,7 @@ const activeGames = []
 
 class GameSession {
     constructor(gameId, roomId, hostId, players, settings) {
-        const { board, letterBag, turnDuration, turnsUntilSkip, bankSize, gameEnd } = settings
+        const { board, tileBag, turnDuration, turnsUntilSkip, rackSize, gameEnd } = settings
         this.gameId = gameId
         this.roomId = roomId
         this.hostId = hostId
@@ -183,12 +183,12 @@ class GameSession {
         this.turnNumber = 1
         this.turnDuration = turnDuration * 1000 
         this.turnsUntilSkip = turnsUntilSkip
-        this.bankSize = bankSize
+        this.rackSize = rackSize
         this.gameEnd = gameEnd
         this.cooldown = 3 * 1000 // time between turns
         this.passedTurns = 0
         this.isOnCooldown = true
-        this.tileBag = this.createTileBag(letterBag)
+        this.tileBag = this.createTileBag(tileBag)
         this.board = this.createBoard(board)
         this.isActive = true;
     }
@@ -208,12 +208,12 @@ class GameSession {
       }
     }
 
-    createTileBag(letterBagData) {
-      const letterBag = []
+    createTileBag(tileBagData) {
+      const tileBag = []
       let id = 1
-      for (let { letter, count, points } of letterBagData.letterData) {
+      for (let { letter, count, points } of tileBagData.letterData) {
         for (let i = 0; i < count; i++) {
-          letterBag.push({
+          tileBag.push({
             id,
             letter,
             isBlank: letter === '',
@@ -224,27 +224,26 @@ class GameSession {
       }
 
       // Fisher-Yates Shuffle
-      for (let i = letterBag.length - 1; i > 0; i--) {
+      for (let i = tileBag.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1)) // Get a random index from 0 to i
         // Swap elements using a temporary variable
-        const temp = letterBag[i];
-        letterBag[i] = letterBag[j];
-        letterBag[j] = temp;
+        const temp = tileBag[i];
+        tileBag[i] = tileBag[j];
+        tileBag[j] = temp;
       }
 
-      return letterBag
-      //return letterBag.slice(0, 17)
+      return tileBag
     }
  
     createBoard(boardData) {
-      const { size, bonusTiles } = boardData
+      const { size, bonusSquares } = boardData
       return Array.from({ length: size }, (_, row) =>
         Array.from({ length: size }, (_, col) => ({
             x: col,
             y: row,
             occupied: false,
             content: null,
-            bonusType: bonusTiles.find(bonusTile => bonusTile.x === col && bonusTile.y === row)?.bonusType
+            bonusType: bonusSquares.find(square => square.x === col && square.y === row)?.bonusType
         }))
       )
     }
@@ -254,7 +253,8 @@ class GameSession {
       this.sendMessage(`The host has started a new game 🎲`, `New Game`)
 
       for (let player of this.players) {
-        this.distributeLetters(player, this.bankSize)
+        player.rack = []
+        this.distributeLetters(player, this.rackSize)
         player.score = 0
         player.inactiveTurns = 0
         player.reactionScore = 0
@@ -266,20 +266,19 @@ class GameSession {
       }
       io.to(this.roomId).emit('gameStarted');
       io.to(this.roomId).emit('gameUpdated', sessionData);
-      // Send each player's letterBank to them individually
+      // Send each player's rack to them individually
       for (let player of this.players) {
-        io.to(player._id).emit('letterBankUpdated', player.letterBank);
+        io.to(player._id).emit('rackUpdated', player.rack);
       }
       setTimeout(() => {this.startTurn()}, this.cooldown);
     }
 
     distributeLetters(player, amount) {
-      if (!player.letterBank) player.letterBank = []
       for (let i=0; i < amount; i++) {
         if (this.tileBag.length === 0) {
           break; // Exit if no letters are left in the bag
         }
-        player.letterBank.push(this.tileBag.pop())
+        player.rack.push(this.tileBag.pop())
       }
     }
 
@@ -292,7 +291,7 @@ class GameSession {
           this.nextTurn()
           return
         }
-        if (turnPlayer.letterBank.length === 0) { // skip the turn if player is out of tiles
+        if (turnPlayer.rack.length === 0) { // skip the turn if player is out of tiles
           this.sendMessage(`${turnPlayer.name}'s turn was skipped because they ran out of tiles ❌`, `Turn ${this.turnNumber}`)
           this.nextTurn()
           return
@@ -343,21 +342,21 @@ class GameSession {
 
     updateGame(newlyPlacedLetters, updatedBoard, turnScore) {
       const turnPlayer = this.players[this.turnPlayerIndex]
-      // remove the placed letters from the player's bank and give them the same amount of new letters
+      // remove the placed letters from the player's rack and give them the same amount of new letters
       for (let placedLetter of newlyPlacedLetters) {
-        const letterToRemove = turnPlayer.letterBank.find(letter => letter.id === placedLetter.id)
-        const letterIndex = turnPlayer.letterBank.indexOf(letterToRemove)
-        turnPlayer.letterBank.splice(letterIndex, 1)
+        const letterToRemove = turnPlayer.rack.find(letter => letter.id === placedLetter.id)
+        const letterIndex = turnPlayer.rack.indexOf(letterToRemove)
+        turnPlayer.rack.splice(letterIndex, 1)
       }
-      const NewLettersNeeded = this.bankSize - turnPlayer.letterBank.length
+      const NewLettersNeeded = this.rackSize - turnPlayer.rack.length
       this.distributeLetters(turnPlayer, NewLettersNeeded)
       // save the updated board on the server side
       const newlyPlacedLetterIds = newlyPlacedLetters.map(letter => letter.id)
       for (let row of updatedBoard) {
-        for (let tile of row) {
-          if (tile.content) {
-            if (newlyPlacedLetterIds.includes(tile.content.id)) {
-              tile.fixed = true; // set the tile to fixed so the letter on it can't be moved anymore
+        for (let square of row) {
+          if (square.content) {
+            if (newlyPlacedLetterIds.includes(square.content.id)) {
+              square.fixed = true; // set the square to fixed so the tile on it can't be moved anymore
             }
           }
         }
@@ -372,30 +371,30 @@ class GameSession {
         players: this.players
       }
       io.to(this.roomId).emit('gameUpdated', sessionData);
-      io.to(turnPlayer._id).emit('letterBankUpdated', turnPlayer.letterBank);
+      io.to(turnPlayer._id).emit('rackUpdated', turnPlayer.rack);
     }
 
     swapLetters(SwappedLetterIds) {
-      // remove letters from player's bank
+      // remove letters from player's rack
       const turnPlayer = this.players[this.turnPlayerIndex]
       const lettersToSwap = []
       for (let id of SwappedLetterIds) {
-        const letterToRemove = turnPlayer.letterBank.find(letter => letter.id === id)
-        const letterIndex = turnPlayer.letterBank.indexOf(letterToRemove)
-        turnPlayer.letterBank.splice(letterIndex, 1)
+        const letterToRemove = turnPlayer.rack.find(letter => letter.id === id)
+        const letterIndex = turnPlayer.rack.indexOf(letterToRemove)
+        turnPlayer.rack.splice(letterIndex, 1)
         lettersToSwap.push(letterToRemove)
       }
       // add letters back to the bottom of the bag and distribute new letters
       this.tileBag.unshift(...lettersToSwap)
       this.distributeLetters(turnPlayer, lettersToSwap.length)
-      io.to(turnPlayer._id).emit('turnPassed', turnPlayer.letterBank, JSON.parse(JSON.stringify(this.board)));
+      io.to(turnPlayer._id).emit('turnPassed', turnPlayer.rack, JSON.parse(JSON.stringify(this.board)));
       this.sendMessage(`${turnPlayer.name} passed and swapped ${lettersToSwap.length} letters 🔄`, `Turn ${this.turnNumber}`)
       this.endTurn()
     }
 
     passTurn() {
       const turnPlayer = this.players[this.turnPlayerIndex]
-      io.to(turnPlayer._id).emit('turnPassed', turnPlayer.letterBank, JSON.parse(JSON.stringify(this.board)));
+      io.to(turnPlayer._id).emit('turnPassed', turnPlayer.rack, JSON.parse(JSON.stringify(this.board)));
       this.sendMessage(`${turnPlayer.name} passed`, `Turn ${this.turnNumber}`)
       this.endTurn(true)
     }
@@ -479,7 +478,7 @@ class GameSession {
         turnNumber: this.isOnCooldown ? null : this.turnNumber,
         board: JSON.parse(JSON.stringify(this.board)),
         leftInBag: this.tileBag.length,
-        letterBank: player?.letterBank,
+        rack: player?.rack,
         reactionScore: player?.reactionScore,
         players: this.players, // because scores etc. are not saved in DB
       }

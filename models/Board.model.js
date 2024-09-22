@@ -1,6 +1,6 @@
 const { Schema, model } = require("mongoose");
 
-const defaultBonusTiles = [
+const defaultBonusSquares = [
     // Triple Word Score
     { x: 0, y: 0, bonusType: 'tripleWord' },
     { x: 0, y: 7, bonusType: 'tripleWord' },
@@ -76,9 +76,9 @@ const boardSchema = new Schema(
     creator: { type: Schema.Types.ObjectId, ref: 'User'},
     name: { type: String, required: true },
     size: { type: Number, default: 15 },
-    bonusTiles: {
+    bonusSquares: {
         type: [{ x: Number, y: Number, bonusType: String }],
-        default: defaultBonusTiles,
+        default: defaultBonusSquares,
     },
     default: { type: Boolean },
   },

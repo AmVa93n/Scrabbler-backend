@@ -30,7 +30,7 @@ const defaultLetterData = [
     { letter: 'Z', count: 1, points: 10 }
   ];
   
-const letterBagSchema = new Schema(
+const tileBagSchema = new Schema(
   {
     creator: { type: Schema.Types.ObjectId, ref: 'User'},
     name: { type: String, required: true },
@@ -46,6 +46,6 @@ const letterBagSchema = new Schema(
   }
 );
 
-const LetterBag = model("LetterBag", letterBagSchema);
+const TileBag = model("TileBag", tileBagSchema);
 
-module.exports = LetterBag;
+module.exports = TileBag;

@@ -8,7 +8,7 @@ const fileUploader = require("../config/cloudinary.config.js");
 const User = require("../models/User.model");
 const Room = require("../models/Room.model");
 const Board = require("../models/Board.model");
-const LetterBag = require("../models/LetterBag.model");
+const TileBag = require("../models/TileBag.model.js");
 
 // Require necessary (isAuthenticated) middleware in order to control access to specific routes
 const { isAuthenticated } = require("../middleware/jwt.middleware.js");
@@ -191,9 +191,9 @@ router.get("/boards", isAuthenticated, async (req, res, next) => {
 router.post("/board", isAuthenticated, async (req, res, next) => {
   try {
     const creator = req.payload._id;
-    const { name, size, bonusTiles } = req.body;
+    const { name, size, bonusSquares } = req.body;
     
-    const createdBoard = await Board.create({ creator, name, size, bonusTiles})
+    const createdBoard = await Board.create({ creator, name, size, bonusSquares})
     res.status(200).json({ board: createdBoard });
   } catch (err) {
     next(err);  // Pass the error to the error-handling middleware
@@ -202,9 +202,9 @@ router.post("/board", isAuthenticated, async (req, res, next) => {
 
 router.put("/board", isAuthenticated, async (req, res, next) => {
   try {
-    const { _id, name, size, bonusTiles } = req.body;
+    const { _id, name, size, bonusSquares } = req.body;
 
-    const updatedBoard = await Board.findByIdAndUpdate(_id, { name, size, bonusTiles }, { new: true })
+    const updatedBoard = await Board.findByIdAndUpdate(_id, { name, size, bonusSquares }, { new: true })
 
     if (!updatedBoard) {
       return res.status(404).json({ message: "Board not found" });
@@ -230,56 +230,56 @@ router.delete("/board/:boardId", isAuthenticated, async (req, res, next) => {
   }
 });
 
-// letter bag routes
+// tile bag routes
 
-router.get("/letterbags", isAuthenticated, async (req, res, next) => {
+router.get("/tilebags", isAuthenticated, async (req, res, next) => {
   try {
-    const letterBagsData = await LetterBag.find({$or: [{creator: req.payload._id}, {default: true}]});
+    const tileBagsData = await TileBag.find({$or: [{creator: req.payload._id}, {default: true}]});
     
-    if (!letterBagsData) {
-      return res.status(404).json({ message: "Letter Bags not found" });
+    if (!tileBagsData) {
+      return res.status(404).json({ message: "Tile Bags not found" });
     }
     
-    res.status(200).json({ letterBags: letterBagsData });
+    res.status(200).json({ tileBags: tileBagsData });
   } catch (err) {
     next(err);
   }
 });
 
-router.post("/letterbag", isAuthenticated, async (req, res, next) => {
+router.post("/tilebag", isAuthenticated, async (req, res, next) => {
   try {
     const creator = req.payload._id;
     const { name, letterData } = req.body;
     
-    const createdLetterBag = await LetterBag.create({ creator, name, letterData})
-    res.status(200).json({ letterbag: createdLetterBag });
+    const createdTileBag = await TileBag.create({ creator, name, letterData})
+    res.status(200).json({ tilebag: createdTileBag });
   } catch (err) {
     next(err);  // Pass the error to the error-handling middleware
   }
 });
 
-router.put("/letterbag", isAuthenticated, async (req, res, next) => {
+router.put("/tilebag", isAuthenticated, async (req, res, next) => {
   try {
     const { _id, name, letterData } = req.body;
 
-    const updatedLetterBag = await LetterBag.findByIdAndUpdate(_id, { name, letterData }, { new: true })
+    const updatedTileBag = await TileBag.findByIdAndUpdate(_id, { name, letterData }, { new: true })
 
-    if (!updatedLetterBag) {
-      return res.status(404).json({ message: "Letter Bag not found" });
+    if (!updatedTileBag) {
+      return res.status(404).json({ message: "Tile Bag not found" });
     }
 
-    res.status(200).json({ letterbag: updatedLetterBag });
+    res.status(200).json({ tilebag: updatedTileBag });
   } catch (err) {
     next(err);  // Pass the error to the error-handling middleware
   }
 });
 
-router.delete("/letterbag/:letterbagId", isAuthenticated, async (req, res, next) => {
+router.delete("/tilebag/:tilebagId", isAuthenticated, async (req, res, next) => {
   try {
-    const letterbagId = req.params.letterbagId;
-    const deletedLetterBag = await LetterBag.findByIdAndDelete(letterbagId);
-    if (!deletedLetterBag) {
-      return res.status(404).json({ message: "Letter Bag not found" });
+    const tilebagId = req.params.tilebagId;
+    const deletedTileBag = await TileBag.findByIdAndDelete(tilebagId);
+    if (!deletedTileBag) {
+      return res.status(404).json({ message: "Tile Bag not found" });
     }
     res.status(200).send()
 

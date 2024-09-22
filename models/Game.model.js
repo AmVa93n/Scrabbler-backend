@@ -8,7 +8,7 @@ const gameSchema = new Schema(
         _id: String, 
         name: String, 
         profilePic: String,
-        letterBank: [{
+        rack: [{
             id: { type: Number },
             letter: { type: String },
             points: { type: Number },
@@ -20,10 +20,10 @@ const gameSchema = new Schema(
     }],
     settings: {
         board: { type: Schema.Types.ObjectId, ref: 'Board'},
-        letterBag: { type: Schema.Types.ObjectId, ref: 'LetterBag'},
+        tileBag: { type: Schema.Types.ObjectId, ref: 'TileBag'},
         turnDuration: { type: Number },
         turnsUntilSkip: { type: Number },
-        bankSize: { type: Number },
+        rackSize: { type: Number },
         gameEnd: { type: String },
     },
     state: {
