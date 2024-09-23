@@ -75,13 +75,9 @@ io.on('connection', (socket) => {
 
     socket.on('endGame', async (roomId) => {
       const game = activeGames.find(game => game.roomId === roomId)
-      if (game) {
-        game.endGame()
-        game.sendMessage(`The host has ended the game ⛔`, `Game Over`)
-      } else { // fallback in case game lost from server memory
-        RoomManager.endGame(roomId)
-        RoomManager.sendMessage(roomId, `The host has ended the game ⛔`, `Game Over`)
-      }
+      if (game) game.endedByHost()
+      RoomManager.endGame(roomId)
+      RoomManager.sendMessage(roomId, `The host has ended the game ⛔`, `Game Over`)
     });
 
     socket.on('validateMove', async (roomId, newlyPlacedLetters, updatedBoard, wordsWithScores, promptData) => {
@@ -190,7 +186,6 @@ class GameSession {
         this.isOnCooldown = true
         this.tileBag = this.createTileBag(tileBag)
         this.board = this.createBoard(board)
-        this.isActive = true;
     }
 
     async sendMessage(text, title, genData) {
@@ -264,7 +259,7 @@ class GameSession {
         leftInBag: this.tileBag.length,
         players: this.players,
       }
-      io.to(this.roomId).emit('gameStarted');
+      io.to(this.roomId).emit('gameStarted', this.rackSize, this.gameEnd);
       io.to(this.roomId).emit('gameUpdated', sessionData);
       // Send each player's rack to them individually
       for (let player of this.players) {
@@ -283,24 +278,20 @@ class GameSession {
     }
 
     startTurn() {
-        if (!this.isActive) return;  // Prevent turn logic if game is inactive
         this.isOnCooldown = false // officially enter turn
         const turnPlayer = this.players[this.turnPlayerIndex];
-        if (turnPlayer.inactiveTurns >= this.turnsUntilSkip) { // skip the turn if player as inactive
+        if (turnPlayer.inactiveTurns >= this.turnsUntilSkip) { // skip the turn if player is inactive
           this.sendMessage(`${turnPlayer.name}'s turn was skipped due to inactivity ❌`, `Turn ${this.turnNumber}`)
-          this.nextTurn()
+          this.endTurn()
           return
         }
-        if (turnPlayer.rack.length === 0) { // skip the turn if player is out of tiles
+        if (turnPlayer.rack.length === 0) { // auto pass the turn if player is out of tiles
           this.sendMessage(`${turnPlayer.name}'s turn was skipped because they ran out of tiles ❌`, `Turn ${this.turnNumber}`)
-          this.nextTurn()
+          this.endTurn(true)
           return
         }
+
         this.turnEndTime = new Date(Date.now() + this.turnDuration); // x seconds from now
-        // Clear the previous timeout (if any)
-        if (this.turnTimeout) {
-            clearTimeout(this.turnTimeout);
-        }
         // Notify all players that it's the current player's turn
         const sessionData = {
           turnPlayer: turnPlayer,
@@ -387,14 +378,13 @@ class GameSession {
       // add letters back to the bottom of the bag and distribute new letters
       this.tileBag.unshift(...lettersToSwap)
       this.distributeLetters(turnPlayer, lettersToSwap.length)
-      io.to(turnPlayer._id).emit('turnPassed', turnPlayer.rack, JSON.parse(JSON.stringify(this.board)));
+      io.to(turnPlayer._id).emit('rackUpdated', turnPlayer.rack);
       this.sendMessage(`${turnPlayer.name} passed and swapped ${lettersToSwap.length} letters 🔄`, `Turn ${this.turnNumber}`)
       this.endTurn()
     }
 
     passTurn() {
       const turnPlayer = this.players[this.turnPlayerIndex]
-      io.to(turnPlayer._id).emit('turnPassed', turnPlayer.rack, JSON.parse(JSON.stringify(this.board)));
       this.sendMessage(`${turnPlayer.name} passed`, `Turn ${this.turnNumber}`)
       this.endTurn(true)
     }
@@ -405,23 +395,52 @@ class GameSession {
       // reset inactivity counters
       const turnPlayer = this.players[this.turnPlayerIndex]
       turnPlayer.inactiveTurns = 0
-      // if turn was passed without replacing any letters
-      if (isPassed) { this.passedTurns += 1 } else { this.passedTurns = 0}
-      if (this.passedTurns === this.players.length) { // no player can make any more words
-        this.endGame()
-        this.players.sort((a,b)=> b.score - a.score)
-        this.sendMessage(`No player is able to create more words. the winner is ${this.players[0].name} 🏆`, `Game Over`)
+
+      // check for rack out
+      if (this.gameEnd === 'classic' && turnPlayer.rack.length === 0) {
+        const otherPlayers = this.players.filter(player => player._id !== turnPlayer._id)
+        for (let player of otherPlayers) {
+          player.penalty = player.rack.reduce((penalty, tile) => penalty + tile.points, 0)
+        }
+        const totalPenalties = otherPlayers.reduce((total, player) => total + player.penalty, 0)
+        turnPlayer.score += totalPenalties
+        const penaltyList = otherPlayers.map(player => {
+          const remainingTiles = player.rack.map(tile => tile.letter ? tile.letter : 'blank').join(', ')
+          return `${player.name} had: ${remainingTiles} (-${player.penalty} points)`
+        }).join('\n');
+        this.finishGame()
+        this.sendMessage(`${turnPlayer.name}'s rack is empty!
+          ${penaltyList}
+          ${turnPlayer.name} received a total of ${totalPenalties} points
+          The winner is ${this.players[0].name} with ${this.players[0].score} points 🏆`, `Game Over`)
+          setTimeout(() => {RoomManager.endGame(this.roomId)}, 10000); // give players 10 seconds to read results
         return
       }
+
+      // if turn was passed without replacing any letters
+      if (isPassed) { this.passedTurns += 1 } else { this.passedTurns = 0}
+      const activePlayers = this.players.filter(player => player.inactiveTurns < this.turnsUntilSkip)
+      if (this.passedTurns === activePlayers.length) { // no player can make any more words
+        this.finishGame()
+        this.sendMessage(`No player is able to create more words. The winner is ${this.players[0].name} 🏆`, `Game Over`)
+        RoomManager.endGame(this.roomId)
+        return
+      }
+
       // Advance to the next player's turn after cooldown
       this.isOnCooldown = true
       io.to(this.roomId).emit('turnEnded');
       setTimeout(() => {this.nextTurn()}, this.cooldown);
     }
 
-    handleTurnTimeout() {
-        if (!this.isActive) return;  // Skip if game is inactive
+    finishGame() {
+      clearTimeout(this.turnTimeout); // Stop the current turn timer
+      activeGames.splice(activeGames.indexOf(this), 1)
+      this.players.sort((a,b)=> b.score - a.score)
+      this.saveGame()
+    }
 
+    handleTurnTimeout() {
         const turnPlayer = this.players[this.turnPlayerIndex]
         turnPlayer.inactiveTurns += 1
         const hasBecomeInactive = turnPlayer.inactiveTurns === this.turnsUntilSkip
@@ -433,8 +452,7 @@ class GameSession {
 
         // end the game if x rounds passed with no moves made by any player
         if (this.players.every(player => player.inactiveTurns >= this.turnsUntilSkip)) {
-          this.endGame()
-          this.sendMessage(`The game ended due to inactivity of all players 😴`, `Game Over`)
+          this.allPlayersInactive()
           return
         }
         
@@ -452,10 +470,21 @@ class GameSession {
         this.startTurn();
     }
 
-    async endGame() {
-      this.isActive = false;
-      clearTimeout(this.turnTimeout); // Stop the current turn timer
+    async allPlayersInactive() {
+      clearTimeout(this.turnTimeout);
       activeGames.splice(activeGames.indexOf(this), 1)
+      await Game.findByIdAndDelete(this.gameId)
+      RoomManager.endGame(this.roomId)
+      this.sendMessage(`The game ended due to inactivity of all players 😴`, `Game Over`)
+    }
+
+    async endedByHost() {
+      clearTimeout(this.turnTimeout);
+      activeGames.splice(activeGames.indexOf(this), 1)
+      await Game.findByIdAndDelete(this.gameId)
+    }
+
+    async saveGame() {
       const state = {
         turnPlayerIndex: this.turnPlayerIndex,
         turnEndTime: this.turnEndTime,
@@ -466,7 +495,6 @@ class GameSession {
         isOnCooldown: this.isOnCooldown,
       }
       await Game.findByIdAndUpdate(this.gameId,{ state, players: this.players })
-      RoomManager.endGame(this.roomId)
     }
 
     getRefreshData(userId) {
