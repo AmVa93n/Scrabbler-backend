@@ -89,18 +89,6 @@ router.get("/rooms", isAuthenticated, async (req, res, next) => {
   }
 });
 
-router.post("/room", isAuthenticated, async (req, res, next) => {
-  try {
-    const creator = req.payload._id;
-    const { name, description } = req.body;
-    
-    const createdRoom = await Room.create({ creator, name, description, gameSession: null, kickedUsers: []})
-    res.status(200).json({ room: createdRoom });
-  } catch (err) {
-    next(err);  // Pass the error to the error-handling middleware
-  }
-});
-
 router.get("/room/:roomId", isAuthenticated, async (req, res, next) => {
   try {
     const roomId = req.params.roomId;
@@ -133,12 +121,26 @@ router.get("/room/:roomId", isAuthenticated, async (req, res, next) => {
   }
 });
 
-router.put("/room/:roomId", isAuthenticated, async (req, res, next) => {
+router.post("/room", isAuthenticated, fileUploader.single("roomImage"), async (req, res, next) => {
+  try {
+    const creator = req.payload._id;
+    const { name, description } = req.body;
+    const image = req.file ? req.file.path : null
+    
+    const createdRoom = await Room.create({ creator, name, description, image, gameSession: null, kickedUsers: []})
+    res.status(200).json({ room: createdRoom });
+  } catch (err) {
+    next(err);  // Pass the error to the error-handling middleware
+  }
+});
+
+router.put("/room/:roomId", isAuthenticated, fileUploader.single("roomImage"), async (req, res, next) => {
   try {
     const roomId = req.params.roomId;
     const { name, description, gameSession, kickedUsers } = req.body;
+    const image = req.file ? req.file.path : undefined
 
-    const updatedRoom = await Room.findByIdAndUpdate(roomId, { name, description, gameSession, kickedUsers }, { new: true })
+    const updatedRoom = await Room.findByIdAndUpdate(roomId, { name, description, image, gameSession, kickedUsers }, { new: true })
     .populate('gameSession.players')
     .populate({
       path: 'messages',
