@@ -9,8 +9,6 @@ const Message = require('../models/Message.model');
 const Room = require('../models/Room.model'); 
 const Game = require('../models/Game.model'); 
 //const { formatDistanceToNow } = require('date-fns');
-//const natural = require('natural');
-//const wordnet = new natural.WordNet(); // Load WordNet data
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
@@ -306,17 +304,20 @@ class GameSession {
         }, this.turnDuration);
     }
 
-    handleMove(newlyPlacedLetters, updatedBoard, wordsWithScores, promptData) {
+    handleMove(usedTiles, updatedBoard, wordsWithScores, promptData) {
       const words = wordsWithScores.map(w => w.word)
       const turnPlayer = this.players[this.turnPlayerIndex]
 
       if (this.isMoveValid(words)) { // All words are valid
         const wordStr = words.length === 1 ? 'word' : 'words'
         const wordScoreList = wordsWithScores.map(w => `${w.word} (${w.score} points)`).join('\n');
-        const totalScore = wordsWithScores.reduce((sum, w) => sum + w.score, 0);
-        this.updateGame(newlyPlacedLetters, updatedBoard, totalScore)
+        let totalScore = wordsWithScores.reduce((sum, w) => sum + w.score, 0);
+        const bingo = usedTiles.length === this.rackSize
+        if (bingo) totalScore += 50
+        this.updateGame(usedTiles, updatedBoard, totalScore)
         this.sendMessage(
-          `${turnPlayer.name} created ${words.length} ${wordStr} 💡\n${wordScoreList}\nTotal score: ${totalScore} points`,
+          `${turnPlayer.name} created ${words.length} ${wordStr} 💡\n${wordScoreList}
+          ${bingo ? 'Bonus for using entire rack (50 points)\n' : ''}Total score: ${totalScore} points`,
           `Turn ${this.turnNumber}`
         );
         this.generateText(promptData)
@@ -331,22 +332,22 @@ class GameSession {
       return words.every(word => dictionary.includes(word))
     }
 
-    updateGame(newlyPlacedLetters, updatedBoard, turnScore) {
+    updateGame(usedTiles, updatedBoard, turnScore) {
       const turnPlayer = this.players[this.turnPlayerIndex]
       // remove the placed letters from the player's rack and give them the same amount of new letters
-      for (let placedLetter of newlyPlacedLetters) {
-        const letterToRemove = turnPlayer.rack.find(letter => letter.id === placedLetter.id)
-        const letterIndex = turnPlayer.rack.indexOf(letterToRemove)
-        turnPlayer.rack.splice(letterIndex, 1)
+      for (let usedTile of usedTiles) {
+        const tileToRemove = turnPlayer.rack.find(tile => tile.id === usedTile.id)
+        const tileIndex = turnPlayer.rack.indexOf(tileToRemove)
+        turnPlayer.rack.splice(tileIndex, 1)
       }
-      const NewLettersNeeded = this.rackSize - turnPlayer.rack.length
-      this.distributeLetters(turnPlayer, NewLettersNeeded)
+      const newTilesNeeded = this.rackSize - turnPlayer.rack.length
+      this.distributeLetters(turnPlayer, newTilesNeeded)
       // save the updated board on the server side
-      const newlyPlacedLetterIds = newlyPlacedLetters.map(letter => letter.id)
+      const usedTileIds = usedTiles.map(tile => tile.id)
       for (let row of updatedBoard) {
         for (let square of row) {
           if (square.content) {
-            if (newlyPlacedLetterIds.includes(square.content.id)) {
+            if (usedTileIds.includes(square.content.id)) {
               square.fixed = true; // set the square to fixed so the tile on it can't be moved anymore
             }
           }
@@ -401,6 +402,7 @@ class GameSession {
         const otherPlayers = this.players.filter(player => player._id !== turnPlayer._id)
         for (let player of otherPlayers) {
           player.penalty = player.rack.reduce((penalty, tile) => penalty + tile.points, 0)
+          player.score -= player.penalty
         }
         const totalPenalties = otherPlayers.reduce((total, player) => total + player.penalty, 0)
         turnPlayer.score += totalPenalties

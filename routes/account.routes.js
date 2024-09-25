@@ -290,10 +290,4 @@ router.delete("/tilebag/:tilebagId", isAuthenticated, async (req, res, next) => 
   }
 });
 
-// misc.
-
-router.get("/ping", isAuthenticated, async (req, res, next) => {
-  res.status(200).send() // this is just to keep the server from spinning down
-});
-
 module.exports = router;
