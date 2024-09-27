@@ -2,8 +2,8 @@ const { Schema, model } = require("mongoose");
 
 const gameSchema = new Schema(
   {
-    roomId: { type: String },
-    hostId: { type: String },
+    room: { type: Schema.Types.ObjectId, ref: 'Room'},
+    host: { type: Schema.Types.ObjectId, ref: 'User'},
     players: [{ 
         _id: String, 
         name: String, 

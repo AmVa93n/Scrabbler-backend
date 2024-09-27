@@ -6,6 +6,7 @@ const fileUploader = require("../config/cloudinary.config.js");
 
 // Require the User model in order to interact with the database
 const User = require("../models/User.model");
+const Game = require("../models/Game.model");
 const Room = require("../models/Room.model");
 const Board = require("../models/Board.model");
 const TileBag = require("../models/TileBag.model.js");
@@ -71,6 +72,36 @@ router.delete("/profile", isAuthenticated, async (req, res, next) => {
       } catch (error) {
         next(error); // Pass any errors to the error handling middleware
       }
+});
+
+router.get("/games", isAuthenticated, async (req, res, next) => {
+  const userId = req.payload._id
+  try {
+    const games = await Game.find({
+      players: {
+        $elemMatch: { _id: userId }
+      }
+    }).populate({
+      path: 'settings.board',
+      select: 'name'
+    })
+    .populate({
+      path: 'settings.tileBag',
+      select: 'name'
+    })
+    .populate({
+      path: 'room',
+      select: 'name'
+    })
+    .populate({
+      path: 'host',
+      select: 'name'
+    });
+  
+    res.status(200).json({ games: games });
+  } catch (err) {
+    next(err);
+  }
 });
 
 // room routes
