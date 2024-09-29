@@ -26,21 +26,28 @@ io.on('connection', (socket) => {
 
     socket.on('joinRoom', (roomId) => {
         if (!socket.user) return
-        socket.roomId = roomId
-        socket.join(roomId);
-        io.to(roomId).emit('userJoined', socket.user);
-        RoomManager.sendMessage(roomId, `${socket.user.name} joined the room 👋`);
+        const userId = socket.user._id;
+        const roomSocketIds = io.sockets.adapter.rooms.get(roomId);
+        const allSockets = io.sockets.sockets;
+        let usersInRoom = []
+        if (roomSocketIds) usersInRoom = Array.from(roomSocketIds).map(id => allSockets.get(id).user);
         
+        // Check if any of the existing sockets in the room belong to the same user
+        const isUserAlreadyInRoom = usersInRoom.some(user => user._id === userId);
+        if (!isUserAlreadyInRoom) {
+          socket.roomId = roomId
+          socket.join(roomId);
+          io.to(roomId).emit('userJoined', socket.user);
+          RoomManager.sendMessage(roomId, `${socket.user.name} joined the room 👋`);
+        }
+
         const game = activeGames.find(game => game.roomId === roomId)
         if (game) {
           const sessionData = game.getRefreshData(socket.user._id)
           io.to(socket.user._id).emit('refreshGame', sessionData);
-
         } else {
-          const roomSocketIds = io.sockets.adapter.rooms.get(roomId);
-          const allSockets = io.sockets.sockets
-          const usersInRoom = Array.from(roomSocketIds).map(id => allSockets.get(id).user)
-          io.to(socket.user._id).emit('refreshRoom', usersInRoom);
+          const userList = isUserAlreadyInRoom ? usersInRoom : [...usersInRoom, socket.user]
+          io.to(socket.user._id).emit('refreshRoom', userList);
         }
     });
 
@@ -62,7 +69,7 @@ io.on('connection', (socket) => {
 
     socket.on('startGame', async (roomId, hostId, gameSession) => {
       const { players, settings } = gameSession
-      const newGame = await Game.create({roomId, hostId, players, settings})
+      const newGame = await Game.create({room: roomId, host: hostId, players, settings})
       await Room.findByIdAndUpdate(roomId, { gameSession: newGame })
       let game = activeGames.find(game => game.roomId === roomId)
       if (!game) {

@@ -168,10 +168,10 @@ router.post("/room", isAuthenticated, fileUploader.single("roomImage"), async (r
 router.put("/room/:roomId", isAuthenticated, fileUploader.single("roomImage"), async (req, res, next) => {
   try {
     const roomId = req.params.roomId;
-    const { name, description, gameSession, kickedUsers } = req.body;
+    const { name, description } = req.body;
     const image = req.file ? req.file.path : undefined
 
-    const updatedRoom = await Room.findByIdAndUpdate(roomId, { name, description, image, gameSession, kickedUsers }, { new: true })
+    const updatedRoom = await Room.findByIdAndUpdate(roomId, { name, description, image }, { new: true })
     .populate('gameSession.players')
     .populate({
       path: 'messages',
