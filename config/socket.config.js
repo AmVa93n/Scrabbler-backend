@@ -406,23 +406,7 @@ class GameSession {
 
       // check for rack out
       if (this.gameEnd === 'classic' && turnPlayer.rack.length === 0) {
-        const otherPlayers = this.players.filter(player => player._id !== turnPlayer._id)
-        for (let player of otherPlayers) {
-          player.penalty = player.rack.reduce((penalty, tile) => penalty + tile.points, 0)
-          player.score -= player.penalty
-        }
-        const totalPenalties = otherPlayers.reduce((total, player) => total + player.penalty, 0)
-        turnPlayer.score += totalPenalties
-        const penaltyList = otherPlayers.map(player => {
-          const remainingTiles = player.rack.map(tile => tile.letter ? tile.letter : 'blank').join(', ')
-          return `${player.name} had: ${remainingTiles} (-${player.penalty} points)`
-        }).join('\n');
-        this.finishGame()
-        this.sendMessage(`${turnPlayer.name}'s rack is empty!
-          ${penaltyList}
-          ${turnPlayer.name} received a total of ${totalPenalties} points
-          The winner is ${this.players[0].name} with ${this.players[0].score} points 🏆`, `Game Over`)
-          setTimeout(() => {RoomManager.endGame(this.roomId)}, 10000); // give players 10 seconds to read results
+        this.handleRackOut()
         return
       }
 
@@ -430,9 +414,7 @@ class GameSession {
       if (isPassed) { this.passedTurns += 1 } else { this.passedTurns = 0}
       const activePlayers = this.players.filter(player => player.inactiveTurns < this.turnsUntilSkip)
       if (this.passedTurns === activePlayers.length) { // no player can make any more words
-        this.finishGame()
-        this.sendMessage(`No player is able to create more words. The winner is ${this.players[0].name} 🏆`, `Game Over`)
-        RoomManager.endGame(this.roomId)
+        this.handleAllPlayersPass()
         return
       }
 
@@ -442,11 +424,58 @@ class GameSession {
       setTimeout(() => {this.nextTurn()}, this.cooldown);
     }
 
-    finishGame() {
-      clearTimeout(this.turnTimeout); // Stop the current turn timer
-      activeGames.splice(activeGames.indexOf(this), 1)
+    handleRackOut() {
+      // penalize other players and add penalties to the player who racked out
+      const turnPlayer = this.players[this.turnPlayerIndex]
+      const otherPlayers = this.players.filter(player => player._id !== turnPlayer._id)
+      for (let player of otherPlayers) {
+        player.penalty = player.rack.reduce((penalty, tile) => penalty + tile.points, 0)
+        player.score -= player.penalty
+      }
+      const totalPenalties = otherPlayers.reduce((total, player) => total + player.penalty, 0)
+      turnPlayer.score += totalPenalties
       this.players.sort((a,b)=> b.score - a.score)
+
+      // stop and save game
+      activeGames.splice(activeGames.indexOf(this), 1)
       this.saveGame()
+
+      // announce winner
+      const penaltyList = otherPlayers.map(player => {
+        const remainingTiles = player.rack.map(tile => tile.letter ? tile.letter : 'blank').join(', ')
+        return `${player.name} had: ${remainingTiles} (-${player.penalty} points)`
+      }).join('\n');
+      this.sendMessage(`${turnPlayer.name}'s rack is empty!
+        ${penaltyList}
+        ${turnPlayer.name} received a total of ${totalPenalties} points
+        The winner is ${this.players[0].name} with ${this.players[0].score} points 🏆`, `Game Over`)
+      setTimeout(() => this.sendFinalScores(), 3000)
+      RoomManager.endGame(this.roomId)
+    }
+
+    handleAllPlayersPass() {
+      this.players.sort((a,b)=> b.score - a.score)
+      activeGames.splice(activeGames.indexOf(this), 1)
+      this.saveGame()
+      this.sendMessage(`No player is able to create more words. 
+        The winner is ${this.players[0].name} with ${this.players[0].score} points 🏆`, `Game Over`)
+      setTimeout(() => this.sendFinalScores(), 3000)
+      RoomManager.endGame(this.roomId)
+    }
+
+    sendFinalScores() {
+      // Generate placements and format the final score list
+      const scoreList = this.players.map((player, index) => {
+        let placement;
+        switch (index) {
+          case 0: placement = '🥇 1st'; break
+          case 1: placement = '🥈 2nd'; break
+          case 2: placement = '🥉 3rd'; break
+          default: placement = `${index + 1}th`; break;
+        }
+        return `${placement}: ${player.name} - ${player.score} points`;
+      }).join('\n');
+      this.sendMessage(scoreList, `Final Scores`)
     }
 
     handleTurnTimeout() {
