@@ -402,7 +402,7 @@ class GameSession {
       clearTimeout(this.turnTimeout);
       // reset inactivity counters
       const turnPlayer = this.players[this.turnPlayerIndex]
-      turnPlayer.inactiveTurns = 0
+      if (turnPlayer.inactiveTurns > 0 && turnPlayer.inactiveTurns < this.turnsUntilSkip) turnPlayer.inactiveTurns = 0
 
       // check for rack out
       if (this.gameEnd === 'classic' && turnPlayer.rack.length === 0) {
