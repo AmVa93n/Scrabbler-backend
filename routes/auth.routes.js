@@ -128,20 +128,13 @@ router.get("/verify", isAuthenticated, (req, res, next) => {
 });
 
 router.post('/google', async (req, res) => {
-  const { idToken } = req.body;
+  const { userData } = req.body;
 
   try {
-    // Verify the token
-    const ticket = await client.verifyIdToken({
-      idToken,
-      audience: process.env.GOOGLE_CLIENT_ID,
-    });
-
-    const payload = ticket.getPayload();
-    const googleId = payload.sub;
+    const googleId = userData.id;
 
     // Check if a user with the same email already exists
-    let user = await User.findOne({ email: payload.email, googleId: null })
+    let user = await User.findOne({ email: userData.email, googleId: null })
     if (user) {
       res.status(400).json({ message: "You've already signed up with your Google email address. Please log in with email and password" });
       return;
@@ -150,7 +143,7 @@ router.post('/google', async (req, res) => {
     // Check if a user already signed up with google
     user = await User.findOne({ googleId });
     if (!user) {
-      user = await User.create({ googleId, email: payload.email, name: payload.name, profilePic: payload.picture });
+      user = await User.create({ googleId, email: userData.email, name: userData.name, profilePic: userData.picture });
     }
 
     // Create a JSON Web Token and sign it
